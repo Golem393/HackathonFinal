@@ -1,0 +1,15 @@
+<pasted_content id="95e1">
+Read agent/ (the starter kit) and https://ehl-challenge.atira.ai/llms.txt.
+Build on it: a model-driven (Qwen) tool-use loop that logs into the 4 sites
+from CHALLENGE_SITE_ACCESS, reads the brief and answer schema, and
+submits a placeholder bid. The model chooses navigation at runtime.
+No hardcoded values, no fixed scripts or crawlers. Keep it minimal.
+</pasted_content id="95e1">
+
+---
+
+what is going on now
+
+---
+
+run it now
