@@ -45,9 +45,12 @@ acknowledgements, TAN signing, final confirmation).
   sending on the portal first, then call ask_mailbox ONCE and enter the result right away (a TAN is valid five minutes;
   a new request invalidates the old one).
 - Never use the browser's back navigation: it clears the later steps.
-- Review the summary, then make the final binding submission; its browser confirmation dialog is accepted for you.
+- On the review/summary page, BEFORE the final binding submission: copy every value it shows (decision, positions with
+  material, quantity, prices, lead times, omitted positions, discount, totals) with `note`, verbatim. Then make the
+  final binding submission; its browser confirmation dialog is accepted for you.
 
-Finish with {{"submitted": true or false, "confirmation": "<receipt text or number>", "problems": "..."}}
+Finish with {{"submitted": true or false, "summary_as_shown": "<the summary page's values, verbatim>",
+"confirmation": "<receipt text or number>", "problems": "..."}}
 
 TASK BRIEF:
 {brief}"""
@@ -127,6 +130,32 @@ def bid_for_form(bid: dict) -> str:
     return "\n".join(lines)
 
 
+def bid_table(bid: dict) -> str:
+    """The bid as a readable block for the log."""
+    rows = [f"  {bid.get('tender_reference')} | {bid.get('decision')} | discount {bid.get('discount_percent')} % | "
+            f"total {bid.get('total_net')} EUR"]
+    for p in bid.get("positions") or []:
+        rows.append(f"  {p['position']:>6}  {p['material_number']:<14} qty {p['quantity']:>5}  unit {p['unit_price']:>10}"
+                    f"  base {p.get('base_unit_price')}  lead {p['lead_time_weeks']} w")
+    if bid.get("omitted"):
+        rows.append(f"  omitted: {', '.join(bid['omitted'])}")
+    if bid.get("notes"):
+        rows.append(f"  notes: {bid['notes'][:600]}")
+    return "\n".join(rows)
+
+
+def record(label: str, facts: dict) -> dict:
+    """Log a research result in full (feature `facts`) and keep it in AGENT_LOG_DIR/facts/<label>.json."""
+    telemetry.tracker(label).event("facts", f"{label} facts: {len(json.dumps(facts, ensure_ascii=False))} chars",
+                                   facts=facts)
+    folder = os.environ.get("AGENT_LOG_DIR")
+    if folder:
+        os.makedirs(os.path.join(folder, "facts"), exist_ok=True)
+        with open(os.path.join(folder, "facts", re.sub(r"\W+", "_", label) + ".json"), "w") as file:
+            json.dump(facts, file, ensure_ascii=False, indent=2)
+    return facts
+
+
 async def browser_page(number: int, fallback):
     """A fresh context page in browser `number` (0 is browser 1); a new tab in `fallback`'s browser when the run has
     fewer browsers. Locally, browsers.connect starts a Chromium of its own."""
@@ -137,12 +166,13 @@ async def browser_page(number: int, fallback):
 
 
 async def safely(coroutine, label: str, fallback: dict | None = None) -> dict:
-    """A sub-agent's result, or `fallback` when it fails: one broken site must not stop the bid."""
+    """A sub-agent's result (logged as facts), or `fallback` when it fails: one broken site must not stop the bid."""
     try:
-        return await coroutine
+        result = await coroutine
     except Exception as error:
         telemetry.tracker(label).event("errors", f"{label} failed: {str(error)[:300]}")
-        return dict(fallback or {}, error=str(error)[:300])
+        result = dict(fallback or {}, error=str(error)[:300])
+    return record(label, result) if isinstance(result, dict) else result
 
 
 # ---- the run -----------------------------------------------------------------------------------------------------
@@ -202,6 +232,7 @@ async def solve(task: dict, page) -> dict | None:
         log.event("steps", f"ERP: {len(jobs)} positions in parallel tabs")
         await erp_agent.run_erp(erp_page.context, erp_site, jobs, scenario_date, deadline=values_by - 20,
                                 learned=[str(n) for n in login.get("notes") or []], results=erp_results)
+        record("erp-positions", erp_results)
 
     erp_task = asyncio.create_task(safely(erp_phase(), "erp"))
 
@@ -220,7 +251,7 @@ async def solve(task: dict, page) -> dict | None:
                 log.event("errors", "values deadline: mail research not finished, discount 0 %")
         mail = mail_task.result() if mail_task.done() else {}
         bid = calculator.compute_bid(reference, scenario_date, tender, spec, mail, dict(erp_results))
-        log.event("steps", f"bid: {json.dumps(bid, ensure_ascii=False)[:1500]}")
+        log.event("bid", "BID\n" + bid_table(bid), bid=bid)
         return bid
 
     # Asking the mailbox (address, TAN) uses its own tab in the mail session, next to the research agent.
@@ -270,7 +301,11 @@ async def solve(task: dict, page) -> dict | None:
         "\n- Contact e-mail for the bidder registration: our mailbox's own address; get it with ask_mailbox."
     submit = WebAgent(page, tender_site, label="tender-submit", profile="tender_submit", extra_tools=tools)
     result = await submit.run(SUBMIT_GOAL.format(contact=contact, brief=brief), deadline=end)
-    log.event("steps", f"submission: {json.dumps(result, ensure_ascii=False)[:1000]}")
+    try:  # the page after the binding submission: the portal's receipt
+        result["final_page"] = (await page.inner_text("body", timeout=5000))[:3000]
+    except Exception:
+        pass
+    log.event("bid", f"SUBMISSION: {json.dumps(result, ensure_ascii=False)[:1000]}", submission=result)
     for running in (spec_task, mail_task, erp_login, erp_task):
         if not running.done():
             running.cancel()

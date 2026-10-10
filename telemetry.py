@@ -10,6 +10,7 @@ Features:
     pages    each page view sent to the model          usage    tokens and simulated cost per model call
     timing   how long model calls and actions take     notes    facts the model recorded with `note`
     errors   failed actions and exceptions             summary  totals per agent and overall, at the end
+    facts    each research agent's full result         bid      the computed bid, in full, and the submission
 
 Logins and other secrets registered with `redact()` are masked in every sink. Nothing here changes what the agents
 do: with AGENT_LOG=none they run exactly the same, only silently.
@@ -20,8 +21,8 @@ import sys
 import time
 from contextlib import contextmanager
 
-FEATURES = ("steps", "model", "pages", "usage", "timing", "notes", "errors", "summary")
-DEFAULT = "steps,usage,errors,summary"
+FEATURES = ("steps", "model", "pages", "usage", "timing", "notes", "errors", "summary", "facts", "bid")
+DEFAULT = "steps,usage,errors,summary,bid"
 
 # Simulated prices in USD per million tokens, as published for the hosted models (input, cached input, output).
 PRICES = {"qwen3.8-flash-next": (0.15, 0.016, 0.47), "qwen": (0.15, 0.016, 0.47)}
