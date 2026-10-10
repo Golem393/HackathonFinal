@@ -49,6 +49,7 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 36 | An agent froze for good after a click during navigation | Page reads (`evaluate`, `title`, `content`) have no timeout; a navigating frame can hang them | Every page read has a 5-10 s limit; every action a hard ceiling (90 s, tools 600 s) and counts as failed | `web_agent.observe`, `run` |
 | 37 | FX rate never found; searching the reference with the topic word found nothing | Rule mails are filed in the archive, with a look-alike (future-dated draft) next to the real one; the site's search help states how to search | Mail agents read the search help, search every folder and mailbox (inbox, archive, others), open every matching mail and check status, date and sender | `mail.COMMON` |
 | 38 | Single mail agent never reached the rule mails | One agent, many topics, gates on every page | One login, then focused topic agents (fx, tech, approvals, rules) in parallel tabs | `mail.py` |
+| 39 | Mails in a list were never seen | The list sits in a scroll area that loads rows only when scrolled; agents had no way to scroll | Scroll areas shown as controls; `scroll(id, to_end)` by mouse wheel until nothing new loads; prompt rule | `web_agent.scroll` |
 
 ## Still open
 

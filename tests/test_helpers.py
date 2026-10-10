@@ -171,3 +171,23 @@ class GateDetection(unittest.TestCase):
         self.assertTrue(run(locked, act))
         self.assertFalse(run(passed, act))      # a passed gate that stays on the page is not a gate
         self.assertTrue(run(box_only, act))
+
+
+class Scrolling(unittest.TestCase):
+    def test_lazy_list_loads_when_scrolled(self):
+        lazy = """<div id=box aria-label="Nachrichtenliste" style="height:120px;overflow-y:auto">
+        <div id=rows></div></div><script>
+        let n = 0; const add = k => { for (let i = 0; i < k; i++) { n++; const d = document.createElement('div');
+          d.style.height = '30px'; d.textContent = 'Mail ' + n; rows.appendChild(d); } };
+        add(8); box.addEventListener('scroll', () => { if (n < 30 && box.scrollTop + box.clientHeight >= box.scrollHeight - 5) add(8); });
+        </script>"""
+
+        async def act(agent):
+            view = await agent.observe()
+            area = next(line for line in view.splitlines() if '"scroll area"' in line)
+            area_id = area.split('"id": "')[1].split('"')[0]
+            return view, await agent.act("scroll", {"id": area_id, "to_end": True})
+
+        before, after = run(lazy, act)
+        self.assertNotIn("Mail 30", before)
+        self.assertIn("Mail 30", after)   # every lazily loaded row is now in the page text

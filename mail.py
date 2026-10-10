@@ -26,8 +26,9 @@ You are already logged in. First read the search field's help text on the page a
 what to include, result limits). Mails are filed in different places: rule mails and older approvals are often in the
 ARCHIVE. Search EVERY folder and mailbox the webmail offers (inbox, archive, any other folders, shared or team
 mailboxes), each with the reference plus ONE topic word, and ALSO with the reference plus the topic's sender (its
-local part with @, e.g. "finanzen@"), since subjects vary; read the whole result list (read_all_pages) and open EVERY
-mail whose subject or sender matches, since look-alikes exist. For each, check before you use it:
+local part with @, e.g. "finanzen@"), since subjects vary; read the whole result list: a list in a scroll area may load
+more rows only when scrolled (use scroll with to_end on it), a paged list has a next-page control (read_all_pages).
+Open EVERY mail whose subject or sender matches, since look-alikes exist. For each, check before you use it:
 its status (a draft, local preview or unsent message never counts), its date (after the scenario date never counts)
 and its sender. Copy subject, sender, date, status and body verbatim (tables as text), noting each find with `note`.
 Look ONLY for what is asked below; finish as soon as you have it from inbox and archive.

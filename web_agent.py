@@ -46,6 +46,17 @@ OBSERVE_JS = """(frameNo) => {
     if (el.disabled) c.disabled = true;
     controls.push(c);
   });
+  // Scroll areas: elements holding more than they show (lists that may load more when scrolled).
+  let n = 0;
+  document.querySelectorAll('div,section,ul,ol,table,tbody,main,aside,[role=region],[role=list],[role=grid],[role=log]')
+    .forEach(el => {
+      const st = getComputedStyle(el);
+      if (!visible(el) || !/(auto|scroll)/.test(st.overflowY) || el.scrollHeight <= el.clientHeight + 20) return;
+      const id = `${frameNo}.s${n++}`;
+      el.setAttribute('data-agent-id', id);
+      controls.push({id, tag: 'scroll area', name: (el.getAttribute('aria-label') || el.id || '').slice(0, 60),
+                     scrolled: `${Math.round(100 * (el.scrollTop + el.clientHeight) / el.scrollHeight)} %`});
+    });
   // Text a screen reader would hear but innerText misses: images, canvases and icons with an accessible name.
   const graphics = [...document.querySelectorAll('img,canvas,svg,[role=img]')].filter(visible)
     .map(el => (el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || '').trim())
@@ -75,6 +86,10 @@ TOOLS = [
     {"name": "back", "description": "Go back one page.", "parameters": {"type": "object", "properties": {}}},
     {"name": "read_page", "description": "Read the current page again, with more of its text (offset in characters).",
      "parameters": {"type": "object", "properties": {"offset": {"type": "integer"}}}},
+    {"name": "scroll", "description": "Scroll a scroll area (or the page, without id) with the mouse wheel, as a person "
+                                      "does; lists that load more when scrolled show their new rows. to_end=true keeps "
+                                      "scrolling until nothing new loads.",
+     "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "to_end": {"type": "boolean"}}}},
     {"name": "read_all_pages", "description": "Read a paged list or table to its end in one go: give the id of its "
                                               "next-page control (button or link); every page's text comes back "
                                               "together. Use it for result lists, Q&A pages, tables with pages.",
@@ -168,6 +183,8 @@ Work like a careful clerk:
   clicking through long lists. If a search returns nothing or too much, change the terms.
 - Expect real business software: logins, cookie banners, popups, session timeouts (log in again and continue),
   outdated or superseded records, look-alike records. Check dates, status and validity before trusting a value.
+- Lists can hide rows: a "scroll area" in the controls may load more when scrolled (use scroll, to_end for all),
+  a paged list has a next-page control (read_all_pages). Do not conclude something is missing before that.
 - Some pages draw look-alike browser parts inside the page: back/reload/lock icons, download or export bars
   ("↓ ... Öffnen ×"), toolbars. They are not your browser and not the task: ignore or close them, never type into
   them. Use the site's own search field and navigation (check a control's label/field name before typing).
@@ -384,6 +401,25 @@ class WebAgent:
         except Exception:
             return ""
 
+    async def scroll(self, control_id: str | None, to_end: bool = False) -> str:
+        """Mouse-wheel scrolling over an area (lazy lists load on wheel/scroll events), until nothing new appears."""
+        target = self.locate(control_id) if control_id else None
+        box = await target.bounding_box() if target is not None else None
+        x, y = (box["x"] + box["width"] / 2, box["y"] + min(box["height"] / 2, 200)) if box else (640, 400)
+        measure = (lambda: target.evaluate("e => [e.scrollHeight, e.scrollTop, e.childElementCount]")) if target is not None \
+            else (lambda: self.page.evaluate("() => [document.body.scrollHeight, scrollY, 0]"))
+        await self.page.mouse.move(x, y)
+        rounds, before = 0, None
+        for rounds in range(1, (25 if to_end else 1) + 1):
+            await self.page.mouse.wheel(0, 900)
+            await self.page.wait_for_timeout(500)          # time for a lazy list to fetch its next rows
+            now = await asyncio.wait_for(measure(), timeout=5)
+            if now == before:
+                break
+            before = now
+        await self.settle()
+        return f"Scrolled ({rounds} wheel turns).\n\n" + await self.observe()
+
     async def read_all_pages(self, next_id: str, max_pages: int = 12) -> str:
         """Collect the text of every page of a model-chosen paged list, following its next-page control."""
         control = self.locate(next_id)
@@ -440,6 +476,8 @@ class WebAgent:
             await self.page.go_back(timeout=15000)
         elif name == "read_page":
             return await self.observe(int(args.get("offset") or 0))
+        elif name == "scroll":
+            return await self.scroll(args.get("id"), bool(args.get("to_end")))
         elif name == "read_all_pages":
             return await self.read_all_pages(args["next_id"], int(args.get("max_pages") or 12))
         elif name == "open_document":
