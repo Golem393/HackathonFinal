@@ -122,14 +122,32 @@ NEXT_JS = """(label) => {
   return hit ? hit.getAttribute('data-agent-id') : null;
 }"""
 
-LOGIN_GOAL = """Log in to this website with your login (type_credential) and get past everything that stands between
-the login and the site's normal pages: cookie consent, notices, terms, blocking checks (sliders, checkboxes, codes
-shown on the page). The moment the site's normal content or menu is shown, call finish; do nothing else there.
+LOGIN_GOAL = """Log in to this website with your login (type_credential) and accept what stands right after it
+(cookie consent, notices). A colleague handles access checks (sliders, "not a robot", codes): if one shows, just
+continue once it is gone. The moment the site's normal content or menu is shown, call finish; do nothing else there.
 Finish with {"logged_in": true} or {"logged_in": false, "problem": "..."}."""
 
-# What logging in took on each site (by site URL): every site has its own login flow and gates, so the next login on
-# the same site (another tab, an expired session) starts from what worked.
+GATE_GOAL = """This page shows an access check before its content (unlock slider, "not a robot" box, a receipt or
+code shown on the page, a terms confirmation, a continue button). Pass it: drag every slider to its maximum (type the
+max value into it), tick every box the check asks for, type any code or receipt number exactly as the page shows it
+(it may be in an image's text), then press its continue/unlock button. If it fails, read the message and redo it once.
+As soon as the check is gone and the page's normal content shows, call finish; do nothing else.
+Finish with {"passed": true} or {"passed": false, "problem": "..."}."""
+
+# A gate: a visible unlock slider, or a "not a robot" style confirmation, inside the page. Words, not layouts.
+GATE_JS = """() => {
+  const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  if ([...document.querySelectorAll('input[type=range]')].some(visible)) return true;
+  const text = (document.body ? document.body.innerText : '').toLowerCase();
+  return /kein(e)? roboter|not a robot|nicht automatisiert|zum entsperren|unlock to continue|zugangsprüfung/.test(text)
+    && [...document.querySelectorAll('input[type=checkbox], button')].some(visible);
+}"""
+
+# What logging in / passing a gate took on each site (by kind, then site URL): every site has its own flow, so the
+# next time on the same site (another tab, an expired session) starts from what worked.
 LOGIN_NOTES: dict[str, list[str]] = {}
+GATE_NOTES: dict[str, list[str]] = {}
 
 TROUBLE = ("NOTE:", "WARNING:", "Action failed", "Refused")  # results after which an "auto" profile thinks
 
@@ -277,22 +295,39 @@ class WebAgent:
         except Exception:
             return False
 
-    async def ensure_logged_in(self, deadline: float | None) -> bool:
-        """Hand the tab to the login sub-agent when a login form shows; True when it did. The login agent itself
-        (profile site_login) never delegates."""
-        if self.profile.name == "site_login" or not self.site.get("credentials") or not await self.needs_login():
+    async def needs_gate(self) -> bool:
+        try:
+            return bool(await self.page.evaluate(GATE_JS))
+        except Exception:
             return False
-        self.tel.event("steps", "login form: handing over to the login agent")
-        known = LOGIN_NOTES.get(self.site["url"], [])
-        goal = LOGIN_GOAL + ("\n\nHow logging in went on this site before (same flow, values may differ):"
-                             + "".join(f"\n- {n}" for n in known[-8:]) if known else "")
-        result = await WebAgent(self.page, self.site, label=f"{self.label}-login", profile="site_login") \
+
+    async def delegate(self, kind: str, deadline: float | None) -> bool:
+        """Hand the tab to a helper agent for this site: "login" (credentials) or "gate" (access check). It works on
+        this same tab, learns from earlier times on this site, and gives the tab back; True when it ran."""
+        goal_text, profile, memory = {"login": (LOGIN_GOAL, "site_login", LOGIN_NOTES),
+                                      "gate": (GATE_GOAL, "site_gate", GATE_NOTES)}[kind]
+        self.tel.event("steps", f"{kind}: handing over to the {kind} agent")
+        known = memory.get(self.site["url"], [])
+        goal = goal_text + (f"\n\nHow this went on this site before (same flow, values may differ):"
+                            + "".join(f"\n- {n}" for n in known[-8:]) if known else "")
+        result = await WebAgent(self.page, self.site, label=f"{self.label}-{kind}", profile=profile) \
             .run(goal, deadline=deadline)
         learned = [str(n) for n in result.get("notes") or []]
-        LOGIN_NOTES.setdefault(self.site["url"], []).extend(n for n in learned if n not in known)
-        self.notes.extend(f"(login) {n}" for n in learned[-3:])
+        memory.setdefault(self.site["url"], []).extend(n for n in learned if n not in known)
+        self.notes.extend(f"({kind}) {n}" for n in learned[-3:])
         self.last_view = ""
         return True
+
+    async def ensure_logged_in(self, deadline: float | None) -> bool:
+        """Login form -> login agent; access check -> gate agent (also for the login agent). True when one ran.
+        The gate agent never delegates; the login agent only hands over gates."""
+        ran = False
+        if self.profile.name not in ("site_login", "site_gate") and self.site.get("credentials") \
+                and await self.needs_login():
+            ran = await self.delegate("login", deadline)
+        if self.profile.name != "site_gate" and await self.needs_gate():
+            ran = await self.delegate("gate", deadline) or ran
+        return ran
 
     async def snapshot(self, step: int, action: str, view: str) -> None:
         """With the `html` log feature: keep the page's HTML (frames inlined after it) for offline study."""
@@ -477,8 +512,8 @@ class WebAgent:
         messages = [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Website: {self.site['url']} ({self.site.get('siteId')}). "
-                                        f"You are logged in (a colleague handles logins; should a login form "
-                                        f"appear, just wait for it to be handled).\n\nGOAL:\n{goal}\n\n"
+                                        f"You are logged in. Colleagues handle logins and access checks (sliders, "
+                                        f"'not a robot'): if one appears, it is handled for you.\n\nGOAL:\n{goal}\n\n"
                                         f"Current page:\n{await self.observe()}"},
         ]
         self.tel.event("pages", f"profile {self.profile.name}: thinking {self.profile.thinking}, "
@@ -524,8 +559,8 @@ class WebAgent:
                     with self.tel.action(step, name):
                         content = await self.act(name, args)
                     if name != "type_credential" and await self.ensure_logged_in(deadline):
-                        content = ("NOTE: the session had expired; a colleague logged you in again. Continue with "
-                                   "your goal from here.\n\n" + await self.observe())
+                        content = ("NOTE: a colleague just handled a login or access check on this tab. Continue "
+                                   "with your goal from here.\n\n" + await self.observe())
                 except Exception as error:
                     lines = str(error).splitlines()
                     blocker = next((l.strip() for l in lines if "intercepts pointer events" in l), "")

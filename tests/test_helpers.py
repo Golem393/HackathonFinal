@@ -123,3 +123,39 @@ class LoginHandOver(unittest.TestCase):
         self.assertEqual(calls, [("helper-test-login", "site_login", True)])
         self.assertIn("Materialsuche", view)
         self.assertEqual(web_agent.LOGIN_NOTES["about:blank"], ["passed the gate"])   # remembered per site
+
+
+class GateHandOver(unittest.TestCase):
+    def test_an_access_check_goes_to_the_gate_agent(self):
+        from unittest import mock
+
+        import web_agent
+
+        calls = []
+
+        class GateStub(web_agent.WebAgent):
+            async def run(self, goal, *, deadline=None):
+                calls.append((self.label, self.profile.name))
+                await self.page.set_content("<h1>Posteingang</h1><p>31 Nachrichten</p>")
+                return {"passed": True, "notes": ["slider to 100, then Weiter"]}
+
+        async def act(agent):
+            agent.site = {"url": "https://mail.example", "credentials": {"username": "u", "password": "p"}}
+            with mock.patch.object(web_agent, "WebAgent", GateStub):
+                ran = await agent.ensure_logged_in(None)
+                again = await agent.ensure_logged_in(None)
+            return ran, again, await agent.observe()
+
+        gate = """<section aria-label="Zugangsprüfung"><p>Zum Entsperren ganz nach rechts ziehen</p>
+        <input type=range min=0 max=100 value=0><label><input type=checkbox> Ich bin kein Roboter</label>
+        <button>Weiter</button></section>"""
+        ran, again, view = run(gate, act)
+        self.assertEqual((ran, again), (True, False))
+        self.assertEqual(calls, [("helper-test-gate", "site_gate")])
+        self.assertIn("31 Nachrichten", view)
+        self.assertEqual(web_agent.GATE_NOTES["https://mail.example"], ["slider to 100, then Weiter"])
+
+    def test_normal_pages_are_not_gates(self):
+        async def act(agent):
+            return await agent.needs_gate()
+        self.assertFalse(run("<h1>Posteingang</h1><input type=checkbox> Alle auswählen <button>Suchen</button>", act))

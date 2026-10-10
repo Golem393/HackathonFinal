@@ -41,8 +41,10 @@ class Profile:
 PROFILES = {
     # Logs in to the webmail at the start, in parallel, and gets it past its gates.
     "mail_login": Profile("mail_login", thinking="off", max_steps=12),
-    # Logs in to any site early (ERP, supplier portal) and gets it past its gates, while others work.
+    # Logs in to a site (its own credentials) whenever a login form shows; hands access checks to site_gate.
     "site_login": Profile("site_login", thinking="off", max_steps=14),
+    # Passes a site's access check (unlock slider, "not a robot", code shown on the page, terms, continue).
+    "site_gate": Profile("site_gate", thinking="auto", max_steps=12),
     # Fetches one thing from the mailbox for another agent (TAN, address, a named mail).
     "mail": Profile("mail", thinking="auto", max_steps=25),
     # Reads approvals and rule mails (discount, Konditionsregeln, bonus bands...) and decides which applies.
