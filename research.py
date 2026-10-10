@@ -53,18 +53,22 @@ Note each finding with `note`. Finish with exactly this JSON shape:
 
 MAIL_RESEARCH_GOAL = """You research our sales mailbox (webmail) for the bid on tender reference {reference}.
 Scenario date: {scenario_date}. Only records for EXACTLY this reference count (look-alikes such as "{reference}-A" do
-not); records dated after the scenario date never apply.
+not); records dated after the scenario date never apply. Drafts, local previews and unsent messages are never
+approvals or rules, whatever they say.
 
-Find and copy verbatim (subject, sender, date, body), checking the inbox AND the archive, every result page:
-1. This mailbox's own address (often shown as "logged in as" or as recipient).
-2. Every discount approval (Rabattfreigabe) for this reference from the sales director (leitung@ + our mailbox
+Work in this order (colleagues wait for the first items), noting each find with `note` right away:
+1. This mailbox's own address (often shown as "logged in as" or as recipient): note it first.
+2. The rule mails colleagues need early: Devisenfixing from finanzen@ (currency rates by FX key) and Technikfreigabe
+   from technik@ (stroke reserves by key).
+3. Every discount approval (Rabattfreigabe) for this reference from the sales director (leitung@ + our mailbox
    domain), including any minimum order value it requires.
-3. Every rule mail for this reference from these senders (local part @ our mailbox domain): Konditionsregeln from
-   kalkulation@, Technikfreigabe from technik@, Verpackungstarife from logistik@, Terminfreigabe from logistik@,
-   Devisenfixing from finanzen@, Rüstpools from kalkulation@, Projektbonus from finanzen@, Preisindizes from
-   kalkulation@. Tables in the body: copy them as text.
-Search works best with the reference plus one topic word (the search combines words with AND). Do not request a TAN.
-Note each mail with `note`. Finish with exactly this JSON shape:
+4. The other rule mails for this reference (local part @ our mailbox domain): Konditionsregeln from kalkulation@,
+   Verpackungstarife from logistik@, Terminfreigabe from logistik@, Rüstpools from kalkulation@, Projektbonus from
+   finanzen@, Preisindizes from kalkulation@.
+Check the inbox AND the archive. Search with the reference plus ONE topic word (the search combines words with AND);
+if that finds nothing, try the topic word alone or the sender. Use read_all_pages for result lists. Copy subject,
+sender, date and body verbatim (tables as text). Do not request a TAN.
+Finish with exactly this JSON shape:
 {format}"""
 
 ERP_WARMUP_GOAL = """Log in to this ERP and get past any login, consent, notice or blocking check until its start or

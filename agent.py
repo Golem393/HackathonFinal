@@ -126,8 +126,10 @@ def bid_for_form(bid: dict) -> str:
                         (("base_unit_price", "base price/piece"), ("surcharge_per_unit", "surcharge/piece"),
                          ("packaging_per_unit", "packaging/piece"), ("rebate_total", "project bonus (whole position)"))
                         if p.get(key) is not None)
+        price = f"unit price {german(p['unit_price'])} EUR" if p.get("base_unit_price") is not None or p["unit_price"] \
+            else "unit price unknown: enter 0,00 if the form requires a value"
         lines.append(f"Position {p['position']}: material {p['material_number']}, quantity {p['quantity']} pieces, "
-                     f"unit price {german(p['unit_price'])} EUR, lead time {p['lead_time_weeks']} weeks{extra}")
+                     f"{price}, lead time {p['lead_time_weeks']} weeks{extra}")
     if bid.get("omitted"):
         lines.append("Omit these positions: " + ", ".join(bid["omitted"]))
     return "\n".join(lines)
@@ -157,6 +159,30 @@ def record(label: str, facts: dict) -> dict:
         with open(os.path.join(folder, "facts", re.sub(r"\W+", "_", label) + ".json"), "w") as file:
             json.dump(facts, file, ensure_ascii=False, indent=2)
     return facts
+
+
+ANSWER_FROM_NOTES = """A colleague asks: {request}
+
+These are facts other colleagues already confirmed in our mailbox, verbatim:
+{notes}
+
+If the facts clearly contain the answer (e.g. the mailbox's own address), reply with just the answer. If the answer
+is not clearly there, or it is something new that was only just sent (a fresh TAN), reply with exactly UNKNOWN."""
+
+
+async def answer_from_notes(request: str, notes: list[str]) -> str | None:
+    """One quick model call (no thinking, no browser): the answer when the notes already hold it, else None."""
+    if not notes:
+        return None
+    try:
+        reply = await models.qwen().with_options(timeout=45).chat.completions.create(
+            model=models.QWEN_MODEL, extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            messages=[{"role": "user", "content": ANSWER_FROM_NOTES.format(
+                request=request, notes="\n".join(f"- {n}" for n in notes[-30:]))}])
+        text = (reply.choices[0].message.content or "").strip()
+    except Exception:
+        return None
+    return None if not text or "UNKNOWN" in text.upper() else text[:500]
 
 
 async def browser_page(number: int, fallback):
@@ -207,9 +233,9 @@ async def solve(task: dict, page) -> dict | None:
     spec_task = asyncio.create_task(safely(
         WebAgent(spec_page, spec_site, label="spec", profile="spec")
         .run(research.spec_goal(reference, facts.get("buyer") or "", scenario_date), deadline=research_until), "spec"))
+    mail_agent = WebAgent(mail_page, mail_site, label="mail-research", profile="mail_research")
     mail_task = asyncio.create_task(safely(
-        WebAgent(mail_page, mail_site, label="mail-research", profile="mail_research")
-        .run(research.mail_goal(reference, scenario_date), deadline=research_until), "mail-research"))
+        mail_agent.run(research.mail_goal(reference, scenario_date), deadline=research_until), "mail-research"))
     # The Q&A has its own agent in its own browser context on browser 1 (own session: no clash with the research tab).
     qa_page = await (await page.context.browser.new_context(viewport={"width": 1280, "height": 800})).new_page() \
         if page.context.browser else await page.context.new_page()
@@ -236,12 +262,8 @@ async def solve(task: dict, page) -> dict | None:
 
     merged_task = asyncio.create_task(tender_facts_merged())
 
-    async def erp_phase() -> None:
-        tender, spec = await merged_task, await spec_task
+    def erp_jobs(tender: dict, spec: dict) -> list[dict]:
         requirements = calculator.final_requirements(tender, spec)
-        quantities = calculator.final_quantities(tender, spec)
-        scouted = await erp_login
-        login, site_map = scouted.get("login") or {}, scouted.get("site_map")
         jobs = []
         for position in tender.get("positions") or []:
             req = dict(requirements.get(position.get("requirement")) or {})
@@ -249,13 +271,30 @@ async def solve(task: dict, page) -> dict | None:
                 log.event("errors", f"no requirement {position.get('requirement')} for position {position.get('position')}")
                 continue
             req.pop("id", None)
-            req.update(position=position.get("position"),
-                       quantity_pieces=int(quantities[position["position"]]) if quantities.get(position.get("position")) else None)
+            req["position"] = position.get("position")
             jobs.append(req)
-        log.event("steps", f"ERP: {len(jobs)} positions in parallel tabs")
-        await erp_agent.run_erp(erp_page.context, erp_site, jobs, scenario_date, deadline=values_by - 20,
-                                learned=[str(n) for n in login.get("notes") or []], results=erp_results,
-                                site_map=site_map)
+        return jobs
+
+    async def erp_phase() -> None:
+        """Starts as soon as the positions and the specification are known (the Q&A may still be running); when the
+        Q&A then amends a requirement, only those positions are searched again."""
+        positions, spec = await tender_task, await spec_task
+        scouted = await erp_login
+        login, site_map = scouted.get("login") or {}, scouted.get("site_map")
+        learned = [str(n) for n in login.get("notes") or []]
+        first = erp_jobs(dict(positions, clarifications=[]), spec)
+        log.event("steps", f"ERP: {len(first)} positions in parallel tabs (before the Q&A)")
+        run_first = asyncio.create_task(erp_agent.run_erp(
+            erp_page.context, erp_site, first, scenario_date, deadline=values_by - 20, parallel=6, learned=learned,
+            results=erp_results, site_map=site_map))
+        final = erp_jobs(await merged_task, spec)
+        before = {j["position"]: erp_agent.requirement_key(j) for j in first}
+        changed = [j for j in final if before.get(j["position"]) != erp_agent.requirement_key(j)]
+        await run_first
+        if changed:
+            log.event("steps", f"ERP: Q&A changed {len(changed)} requirement(s), searching those again")
+            await erp_agent.run_erp(erp_page.context, erp_site, changed, scenario_date, deadline=values_by - 20,
+                                    parallel=6, learned=learned, results=erp_results, site_map=site_map)
         record("erp-positions", erp_results)
 
     erp_task = asyncio.create_task(safely(erp_phase(), "erp"))
@@ -281,8 +320,22 @@ async def solve(task: dict, page) -> dict | None:
     # Asking the mailbox (address, TAN) uses its own tab in the mail session, next to the research agent.
     ask_page = None
 
+    def mail_knowledge() -> list[str]:
+        """Everything noted about the mailbox so far: research (live, also while it runs), logins, gates, asks."""
+        notes = list(mail_agent.notes)
+        for memory in (web_agent.LOGIN_NOTES, web_agent.GATE_NOTES):
+            notes += memory.get(mail_site["url"], [])
+        return notes + asked_notes
+
+    asked_notes: list[str] = []
+
     async def ask_mailbox(args: dict) -> str:
         nonlocal ask_page
+        request = str(args.get("request") or "")
+        known_answer = await answer_from_notes(request, mail_knowledge())
+        if known_answer:   # already known (e.g. the mailbox's own address): no browsing, no gates
+            log.event("steps", f"ask_mailbox answered from notes: {request[:80]}")
+            return f"From the mailbox (already known): {known_answer}. Enter it now."
         if ask_page is None:
             ask_page = await mail_page.context.new_page()
         else:
@@ -290,11 +343,12 @@ async def solve(task: dict, page) -> dict | None:
                 await ask_page.reload(timeout=20000)   # newly arrived mail (a TAN) shows after a refresh
             except Exception:
                 pass
-        known = mail_task.result().get("notes") if mail_task.done() else []
-        goal = ASK_MAIL_GOAL.format(reference=args.get("reference") or reference, request=args.get("request")) + \
-            ("\n\nWhat a colleague learned in this mailbox:" + "".join(f"\n- {n}" for n in (known or [])[-10:])
+        known = mail_knowledge()
+        goal = ASK_MAIL_GOAL.format(reference=args.get("reference") or reference, request=request) + \
+            ("\n\nWhat colleagues learned in this mailbox:" + "".join(f"\n- {n}" for n in known[-12:])
              if known else "")
         found = await WebAgent(ask_page, mail_site, label="mail", profile="mail").run(goal, deadline=end)
+        asked_notes.extend(str(n) for n in found.get("notes") or [])
         await page.bring_to_front()
         answer = str(found.get("answer") or "").strip()
         if answer:
@@ -345,7 +399,14 @@ async def main() -> int:
         browser, page = await browsers.connect(playwright)
         global PLAYWRIGHT
         PLAYWRIGHT = playwright  # lets solve() attach to the run's other browsers
-        answer = await solve(task, page)
+        seconds = contract.seconds_left(task)
+        if seconds == float("inf"):
+            seconds = float(os.environ.get("RUN_SECONDS", "1200"))
+        try:  # hard stop: a hanging sub-agent must never run the clock out (a late answer scores 0)
+            answer = await asyncio.wait_for(solve(task, page), timeout=max(30, seconds - 20))
+        except asyncio.TimeoutError:
+            telemetry.tracker("orchestrator").event("errors", "hard stop: the run's time is up")
+            answer = None
     telemetry.summary()
     if answer is None:
         print("No answer to submit here: the bid was entered on the tender portal.", flush=True)

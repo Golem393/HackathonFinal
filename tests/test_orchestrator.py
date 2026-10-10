@@ -33,7 +33,7 @@ class FakeAgent:
     seen: list = []
 
     def __init__(self, page, site, *, label="", profile="", extra_tools=None, **_):
-        self.label, self.tools = label, extra_tools or {}
+        self.label, self.tools, self.notes = label, extra_tools or {}, []
 
     values = ""
 

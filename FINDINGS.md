@@ -37,11 +37,17 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 24 | Access checks cost work-agent steps | Gates on many pages | Dedicated gate agent; only for gates still locked; all gate actions in one turn | `GATE_JS`, `GATE_GOAL` |
 | 25 | Submission agent re-researched documents | Goal did not say research was done | Goal: research is done, go straight through the form | `agent.SUBMIT_GOAL` |
 | 26 | Contact e-mail rejected on the form | Own mailbox address not handed over | Mail research returns the mailbox's own address; handed to the submission | `agent.solve` |
+| 27 | Submission blocked ~10 min on one question about our own address | The answer was in a running agent's notes, but only final results were shared; the asking agent browsed through gates | `ask_mailbox` first answers from live notes (research, login, gate, earlier asks) with one call | `agent.answer_from_notes` |
+| 28 | A hanging sub-agent kept the run alive past its time | No global limit | Hard stop of the whole solve shortly before the clock ends | `agent.main` |
+| 29 | Positions without a converted price were left out of the bid | Calculator only kept fully priced positions | Every position with a known material goes in (quantity, material, lead time score on their own); unknown price = 0.00, noted | `calculator.compute_bid` |
+| 30 | Foreign-currency prices unusable | No conversion | Rate from the latest FX rule mail by the condition's FX key; converted base price HALF_UP to cents | `calculator.fx_rate` |
+| 31 | ERP waited for the full Q&A; only 3 tabs | Sequential phases, low parallelism | ERP starts with positions + specification, 6 tabs; requirements changed by the Q&A are searched again | `agent.erp_phase` |
+| 32 | Calls slow with large context | Bulky tool results (paged lists, documents) stayed in context | All bulky results shrink like page views; smaller page text per view | `web_agent.shrink_old_pages`, `profiles.py` |
+| 33 | Number formats mixed within one system | Each price record states its own format (e.g. en-US vs de-DE) | Agents convert with the stated format and also copy the shown text | `erp_agent.DETAILS_GOAL` |
+| 34 | Rule mails found late or never | Mail agent spent its budget elsewhere; searches too narrow | Order: own address, then rules others need early, then approvals, then the rest; inbox and archive; fallback searches | `research.MAIL_RESEARCH_GOAL` |
 
 ## Still open
 
-- Number formats differ by currency on the same site (decimal comma vs decimal point): agents should return numbers
-  as JSON numbers plus the shown text, and the parser must not guess thousands separators blindly.
 - Webmail drafts / unsent previews can look like approvals: approvals must be sent records only.
 - Rule mails (Konditionsregeln, Technikfreigabe, ...) are found late or not at all; the calculator's advanced
   components (`advanced_components`) are not implemented yet.

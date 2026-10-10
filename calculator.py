@@ -172,6 +172,24 @@ def scale_price(condition: dict, quantity: Decimal) -> Decimal | None:
     return price / (divisor or Decimal(1))
 
 
+def fx_rate(mail: MailFacts, fx_key: str | None, currency: str, on: date) -> Decimal | None:
+    """Rule 22 (basic): EUR per unit of `currency` from the latest Devisenfixing mail up to the scenario date that names
+    the condition's FX key (or, without a key, the currency): the first number after the key on that line."""
+    mails = sorted((m for m in mail.get("rule_mails") or []
+                    if "devisen" in str(m.get("kind", "")).lower() and (day(m.get("date")) or date.min) <= on),
+                   key=lambda m: stamp(m.get("date")), reverse=True)
+    needle = (fx_key or currency or "").strip()
+    for m in mails:
+        for line in str(m.get("text") or "").splitlines():
+            if needle and needle in line:
+                after = line.split(needle, 1)[1]
+                found = re.search(r"\d+(?:[.,]\d+)*", after)
+                rate = num(found.group(0)) if found else None
+                if rate:
+                    return rate
+    return None
+
+
 def approved_discount(mail: MailFacts, reference: str, on: date, undiscounted_net: Decimal | None,
                       complete: bool = True) -> Decimal:
     """Rules 5 + conditional discount: latest exact-reference approval from leitung@<our domain> up to the scenario
@@ -247,26 +265,39 @@ def compute_bid(reference: str, scenario_date: str, tender: TenderFacts, spec: S
     base = {}
     for pid in chosen:
         condition = valid_condition((erp.get(pid) or {}).get("price_conditions") or [], on)
-        if condition and quantities.get(pid) is not None and str(condition.get("currency") or "EUR").upper() in ("EUR", "€", ""):
-            base[pid] = scale_price(condition, quantities[pid])
-        else:
-            notes.append(f"{pid}: no valid EUR price condition (currency conversion not implemented)")
+        if not condition or quantities.get(pid) is None:
+            notes.append(f"{pid}: no price condition valid on the scenario date")
+            continue
+        price = scale_price(condition, quantities[pid])
+        currency = str(condition.get("currency") or "EUR").upper()
+        if price is not None and currency not in ("EUR", "€", ""):
+            rate = fx_rate(mail, condition.get("fx_key"), currency, on)
+            price = cents(price * rate) if rate else None   # converted base price, HALF_UP to cents (rule 22)
+            if price is None:
+                notes.append(f"{pid}: {currency} price, no FX rate found for {condition.get('fx_key') or currency}")
+        if price is not None:
+            base[pid] = price
     known = cents(sum((quantities[p] * cents(b) for p, b in base.items() if b is not None), Decimal(0)))
     complete = bool(base) and len(base) == len(positions) and all(b is not None for b in base.values())
     discount = approved_discount(mail, reference, on, known, complete)
     weeks = lead_times(chosen, quantities, erp)
 
+    # Never omit a position whose material is known: every field scores on its own (quantity, material and lead
+    # time count even without a price). An unknown price is entered as 0.00 and noted; the total stays consistent.
     bid_positions: list[BidPosition] = []
     for pid in positions:
-        price = base.get(pid)
-        if pid not in chosen or price is None or quantities.get(pid) is None or weeks.get(pid) is None:
+        if pid not in chosen or quantities.get(pid) is None:
             continue
+        price = base.get(pid)
         extra = advanced_components(pid, erp.get(pid) or {}, tender, mail)
-        unit = cents(price * (1 - discount / 100))
+        unit = cents(price * (1 - discount / 100)) if price is not None else Decimal(0)
         bid_positions.append(BidPosition(
             position=pid, material_number=chosen[pid], quantity=int(quantities[pid]), unit_price=float(unit),
-            lead_time_weeks=weeks[pid], base_unit_price=float(cents(price)),
+            lead_time_weeks=weeks.get(pid) if weeks.get(pid) is not None else 0,
+            base_unit_price=float(cents(price)) if price is not None else None,
             surcharge_per_unit=None, packaging_per_unit=None, rebate_total=None))
+        if price is None:
+            notes.append(f"{pid}: price unknown, entered as 0.00")
         if extra.get("missing"):
             notes.append(f"{pid}: not yet computed: {', '.join(extra['missing'])}")
     done = {p["position"] for p in bid_positions}

@@ -103,14 +103,17 @@ DETAILS_GOAL = """You read the commercial facts of ONE material in this company 
 Site map from a colleague who explored this ERP today (go straight to the pages it names):
 {site_map}
 
-Read, copying numbers exactly as shown:
-1. Every price condition: validity period, currency, price unit, FX key if named, all quantity scales, status.
+Read:
+1. Every price condition: validity period, currency, price unit, FX key if named, all quantity scales, status, and
+   the number format the page states for it (e.g. en-US: 1,234.5 / de-DE: 1.234,5). Give every number as a plain
+   JSON number converted with THAT format (thousands separators removed, decimal point), and the scale prices also
+   verbatim in "shown" so they can be checked.
 2. Unrestricted (freely usable) stock in pieces; blocked or quality-inspection stock does not count.
 3. Lead time from stock and production lead time, in weeks.
 4. Pieces per carton, masses (surcharge mass per piece, allocation mass), setup fees, any surcharge or index key.
 Finish as soon as you have these (null for what the ERP does not show). Finish with exactly this JSON shape:
 {{"price_conditions": [{{"valid_from": "...", "valid_to": "...", "currency": "...", "price_unit": "...", "fx_key": null,
-   "scales": [{{"from_quantity": 0, "price": 0}}], "status": "..."}}],
+   "number_format": "...", "scales": [{{"from_quantity": 0, "price": 0, "shown": "..."}}], "status": "..."}}],
   "stock_available_pieces": null, "lead_time_from_stock_weeks": null, "lead_time_production_weeks": null,
   "pieces_per_carton": null, "surcharge_mass_kg_per_piece": null, "allocation_mass": null, "setup_fee": null,
   "other_price_facts": "...", "problems": "..."}}"""

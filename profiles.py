@@ -25,7 +25,7 @@ class Profile:
     model: str = models.QWEN_MODEL
     max_steps: int = 40             # a safety cap: deadlines are the real limit (a step costs ~3-5 s)
     keep_pages: int = 2             # full page views kept in context; older ones become stubs
-    text_limit: int = 9000          # characters of page text per view
+    text_limit: int = 7000          # characters of page text per view (more via read_page offset)
     extra: dict = field(default_factory=dict)  # further request fields for this model
 
     def request_options(self, think: bool) -> dict:
@@ -48,13 +48,13 @@ PROFILES = {
     # Fetches one thing from the mailbox for another agent (TAN, address, a named mail).
     "mail": Profile("mail", thinking="auto", max_steps=25),
     # Reads approvals and rule mails (discount, Konditionsregeln, bonus bands...) and decides which applies.
-    "mail_research": Profile("mail_research", thinking="auto", max_steps=80, keep_pages=3),
+    "mail_research": Profile("mail_research", thinking="auto", max_steps=80, keep_pages=2),
     # Walks the tender portal's submission flow and fills in values it is given.
     "tender_submit": Profile("tender_submit", thinking="auto", max_steps=90),
     # Reads the tender, bill of quantities and Q&A.
-    "tender_research": Profile("tender_research", thinking="auto", max_steps=60, keep_pages=3),
+    "tender_research": Profile("tender_research", thinking="auto", max_steps=60, keep_pages=2),
     # Reads every bidder Q&A answer (quantity changes, withdrawals, amendments, keys, fees).
-    "tender_qa": Profile("tender_qa", thinking="auto", max_steps=80, keep_pages=3, text_limit=12000),
+    "tender_qa": Profile("tender_qa", thinking="auto", max_steps=80, keep_pages=2, text_limit=10000),
     # Learns the ERP's navigation once and writes a site map for the others.
     "erp_scout": Profile("erp_scout", thinking="auto", max_steps=40),
     # Finds the active material matching one requirement (candidates, attributes, status).
@@ -64,7 +64,7 @@ PROFILES = {
     # (older single-agent ERP flow) one position's material and commercial facts.
     "erp_position": Profile("erp_position", thinking="auto", max_steps=80),
     # Reads the current specification revision on the supplier portal.
-    "spec": Profile("spec", thinking="auto", max_steps=70, keep_pages=3),
+    "spec": Profile("spec", thinking="auto", max_steps=70, keep_pages=2),
     # Anything else.
     "default": Profile("default", thinking="auto", max_steps=60),
 }

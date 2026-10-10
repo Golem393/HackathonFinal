@@ -508,7 +508,8 @@ class WebAgent:
 
     def shrink_old_pages(self, messages: list) -> None:
         """Keep the newest page views (profile.keep_pages) in full; notes keep the facts from older ones."""
-        pages = [m for m in messages if m["role"] == "tool" and m["content"].startswith(("URL: ", *TROUBLE))]
+        bulky = ("URL: ", "READ ", "DOCUMENT ", "No download", "POPUP CLOSED", "BROWSER DIALOG", *TROUBLE)
+        pages = [m for m in messages if m["role"] == "tool" and m["content"].startswith(bulky)]
         for message in pages[:-self.profile.keep_pages]:
             message["content"] = message["content"].split("\n", 1)[0] + "\n[older page view dropped; see your notes]"
 

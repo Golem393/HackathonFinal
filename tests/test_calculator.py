@@ -117,3 +117,24 @@ class Rules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NeverOmit(unittest.TestCase):
+    def test_positions_with_material_stay_in_even_without_price(self):
+        erp = {"1": {"material_number": "M1", "lead_time_production_weeks": 6, "price_conditions": [
+                   {"valid_from": "01.01.2030", "valid_to": "31.12.2030", "currency": "USD", "fx_key": "FX-1",
+                    "scales": [{"from_quantity": 1, "price": 100}]}]},
+               "2": {"material_number": "M2", "lead_time_production_weeks": 4}}
+        bid = calc.compute_bid("T-1", "2030-06-01", TENDER, SPEC, {}, erp)
+        self.assertEqual([p["position"] for p in bid["positions"]], ["1", "2"])
+        self.assertEqual([p["unit_price"] for p in bid["positions"]], [0.0, 0.0])
+        self.assertEqual(bid["omitted"], [])
+
+    def test_currency_converted_with_the_fx_mail(self):
+        mail = {"rule_mails": [{"kind": "Devisenfixing", "date": "01.05.2030", "reference": "T-1",
+                                "text": "Fixing T-1\nFX-1: 0,9000 EUR je USD"}]}
+        erp = {"1": {"material_number": "M1", "lead_time_production_weeks": 6, "price_conditions": [
+                   {"valid_from": "01.01.2030", "valid_to": "31.12.2030", "currency": "USD", "fx_key": "FX-1",
+                    "price_unit": "per 100", "scales": [{"from_quantity": 1, "price": "1.000,00"}]}]}}
+        bid = calc.compute_bid("T-1", "2030-06-01", TENDER, SPEC, mail, erp)
+        self.assertEqual(bid["positions"][0]["base_unit_price"], 9.0)   # 1000 USD / 100 x 0.90
