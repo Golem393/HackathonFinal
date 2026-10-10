@@ -313,7 +313,8 @@ class WebAgent:
                       "\n\nWrite the final result now, in exactly the JSON shape the goal asks for, using ONLY these "
                       "facts (null or empty for anything not found). Answer with the JSON only.")
             try:
-                reply = await self.client.with_options(timeout=60).chat.completions.create(
+                client = self.client.with_options(timeout=60) if hasattr(self.client, "with_options") else self.client
+                reply = await client.chat.completions.create(
                     model=self.profile.model, messages=[{"role": "user", "content": prompt}],
                     **self.profile.request_options(False))
                 text = reply.choices[0].message.content or ""
