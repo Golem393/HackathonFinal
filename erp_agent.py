@@ -84,11 +84,13 @@ The requirement, from the buyer's current specification:
 Site map from a colleague who explored this ERP today (use it, do not explore again):
 {site_map}
 
-1. List the materials of the catalogue group (narrow the search until it lists at most 20 results).
+1. List the materials of the catalogue group (narrow the search until it lists at most 20 results). Stay inside
+   this group: search outside it only once, and only if the group search lists nothing.
 2. For each candidate, compare bore, stroke, pressure, mounting and certification with the requirement, and check its
    status: only an ACTIVE (released) material counts; blocked or inactive ones never do.
 3. If the best candidate is blocked or differs, go on with the next candidate. Stop as soon as you have ONE active
-   material whose attributes all match, or when every candidate is checked.
+   material whose attributes all match, or when every candidate of the group is checked. Do not cross-check the
+   rest of the ERP to prove a match: the group's candidates decide.
 Do not read prices, stock or lead times (another colleague does). Note each checked candidate with `note`.
 Finish with exactly this JSON shape:
 {{"material_number": "<the active exact match, or null>", "match_evidence": "<attributes compared, and where>",
@@ -116,7 +118,7 @@ Finish as soon as you have these (null for what the ERP does not show). Finish w
 USABLE_STROKE_NOTE = """The stroke above is USABLE travel (nutzbarer Weg): the nominal stroke in the ERP is larger by a reserve
 at each end, given in the Technikfreigabe ({reserve}). Match the nominal stroke = usable travel + 2 x reserve; if the
 reserve is unknown, take the candidate whose stroke is the smallest one above the usable travel and that matches
-everything else, and say so in problems."""
+everything else, finish right away, and say so in problems (a colleague checks the reserve)."""
 
 REQUIREMENT_KEYS = ("catalogue_group", "bore_mm", "stroke_mm", "usable_stroke", "pressure_bar", "mounting",
                     "certification", "reserve_mm")

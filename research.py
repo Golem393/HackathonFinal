@@ -25,7 +25,8 @@ tender on this tender portal, for our bid. Do NOT start or fill the bid submissi
 
 Tender reference: {reference}. Scenario date: {scenario_date}.
 
-Open the tender's Q&A and read EVERY answer on EVERY page (use read_all_pages on the list's next-page control). Some
+Open the tender's Q&A and read EVERY answer on EVERY page in ONE call: read_all_pages on the list's next-page control
+(not goto page by page). Then open only the rows whose details are hidden. Some
 details (dates, full text) may only show after expanding a row or pressing a button: open them. For each answer copy:
 number, date (as shown, with time and timezone), the answer verbatim, and what it does:
 - a quantity change for a position (new total quantity, in the position's unit),

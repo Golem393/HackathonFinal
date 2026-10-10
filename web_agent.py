@@ -131,6 +131,8 @@ GATE_GOAL = """This page shows an access check before its content (unlock slider
 code shown on the page, a terms confirmation, a continue button). Pass it: drag every slider to its maximum (type the
 max value into it), tick every box the check asks for, type any code or receipt number exactly as the page shows it
 (it may be in an image's text), then press its continue/unlock button. If it fails, read the message and redo it once.
+Do all of it in ONE turn when the controls are visible: several tool calls at once (every slider, every box, the code,
+then the continue/unlock button), not one per turn; a page may hold more than one check (e.g. list and reading pane).
 As soon as the check is gone and the page's normal content shows, call finish; do nothing else.
 Finish with {"passed": true} or {"passed": false, "problem": "..."}."""
 
