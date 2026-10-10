@@ -93,6 +93,19 @@ class Rules(unittest.TestCase):
         erp["2"] = {"material_number": None}
         self.assertEqual(calc.compute_bid("T-1", "2030-06-01", TENDER, SPEC, {}, erp)["decision"], "no_bid")
 
+    def test_no_bid_never_from_a_usable_stroke_without_reserve(self):
+        spec = {"current_revision": "C", "requirements": [{"id": "R1", "bore_mm": 50, "stroke_mm": 200, "usable_stroke": True},
+                                                          {"id": "R2", "bore_mm": 40, "pieces_per_set": 2}]}
+        bid = calc.compute_bid("T-1", "2030-06-01", TENDER, spec, {}, {"1": {"material_number": None}})
+        self.assertEqual((bid["decision"], bid["omitted"]), ("bid", ["1", "2"]))
+
+    def test_partial_sum_proves_a_reached_minimum(self):
+        mail = {"bidder_domain": "firma.example", "approvals": [
+            {"sender": "leitung@firma.example", "date": "01.01.2030", "reference": "T-1", "percent": 5, "min_order_value": 1}]}
+        on = calc.day("10.01.2030")
+        self.assertEqual(calc.approved_discount(mail, "T-1", on, Decimal(50), complete=False), Decimal(5))
+        self.assertEqual(calc.approved_discount(mail, "T-1", on, Decimal(0), complete=False), Decimal(0))
+
 
 if __name__ == "__main__":
     unittest.main()

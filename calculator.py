@@ -139,9 +139,11 @@ def scale_price(condition: dict, quantity: Decimal) -> Decimal | None:
     return price / (divisor or Decimal(1))
 
 
-def approved_discount(mail: MailFacts, reference: str, on: date, undiscounted_net: Decimal | None) -> Decimal:
+def approved_discount(mail: MailFacts, reference: str, on: date, undiscounted_net: Decimal | None,
+                      complete: bool = True) -> Decimal:
     """Rules 5 + conditional discount: latest exact-reference approval from leitung@<our domain> up to the scenario
-    date; a failed minimum order value means 0 % (no fallback to older approvals)."""
+    date; a failed minimum order value means 0 % (no fallback to older approvals). With only some positions priced
+    (complete=False), their sum is a lower bound: reaching the minimum already proves the condition."""
     domain = (mail.get("bidder_domain") or str(mail.get("mailbox_address", "")).split("@")[-1]).lower()
     approvals = [a for a in mail.get("approvals") or []
                  if str(a.get("reference", "")).strip() == reference
@@ -153,7 +155,9 @@ def approved_discount(mail: MailFacts, reference: str, on: date, undiscounted_ne
     latest = max(approvals, key=lambda a: stamp(a.get("date")))
     minimum = num(latest.get("min_order_value"))
     if minimum is not None and (undiscounted_net is None or undiscounted_net < minimum):
-        return Decimal(0)
+        return Decimal(0)   # failed, or not provable from the positions priced so far
+    if minimum is not None and not complete:
+        pass                # the partial sum already reaches the minimum: the full order does too
     return num(latest.get("percent")) or Decimal(0)
 
 
@@ -192,10 +196,16 @@ def compute_bid(reference: str, scenario_date: str, tender: TenderFacts, spec: S
     positions = [p.get("position") for p in tender.get("positions") or []]
     notes = []
 
-    # Decision: a position whose ERP search completed without an exact active match means no_bid.
+    # Decision: a position whose ERP search completed without an exact active match means no_bid, but only when the
+    # requirement searched for was final. A usable-stroke requirement needs the reserve from the Technikfreigabe
+    # first; without it a missing match proves nothing, and a wrong no_bid would lose the whole bid.
+    requirements = final_requirements(tender, spec)
+    by_position = {p.get("position"): requirements.get(p.get("requirement")) or {} for p in tender.get("positions") or []}
     for pid in positions:
         facts = erp.get(pid) or {}
-        if facts and not facts.get("incomplete") and not facts.get("error") and facts.get("material_number") is None:
+        uncertain = by_position.get(pid, {}).get("usable_stroke") and not by_position.get(pid, {}).get("reserve_applied")
+        if facts and not facts.get("incomplete") and not facts.get("error") and facts.get("material_number") is None \
+                and not uncertain:
             return Bid(tender_reference=reference, decision="no_bid", currency="EUR", discount_percent=0.0,
                        positions=[], omitted=[], total_net=0.0, notes=f"no matching active material for {pid}")
 
@@ -208,9 +218,9 @@ def compute_bid(reference: str, scenario_date: str, tender: TenderFacts, spec: S
             base[pid] = scale_price(condition, quantities[pid])
         else:
             notes.append(f"{pid}: no valid EUR price condition (currency conversion not implemented)")
-    undiscounted = cents(sum((quantities[p] * cents(b) for p, b in base.items() if b is not None), Decimal(0))) \
-        if base and len(base) == len(chosen) else None
-    discount = approved_discount(mail, reference, on, undiscounted)
+    known = cents(sum((quantities[p] * cents(b) for p, b in base.items() if b is not None), Decimal(0)))
+    complete = bool(base) and len(base) == len(positions) and all(b is not None for b in base.values())
+    discount = approved_discount(mail, reference, on, known, complete)
     weeks = lead_times(chosen, quantities, erp)
 
     bid_positions: list[BidPosition] = []
