@@ -70,3 +70,36 @@ class AutoThinking(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Finalize(unittest.TestCase):
+    def test_out_of_steps_turns_notes_into_the_result(self):
+        from types import SimpleNamespace as NS
+        from playwright.async_api import async_playwright
+
+        class Model(FakeModel):
+            async def create(self, **kwargs):
+                if "tools" not in kwargs:   # the finalize call: answers with the JSON
+                    message = NS(content='{"percent": 7, "found": true}', tool_calls=None)
+                    return NS(choices=[NS(message=message)], usage=None)
+                return await super().create(**kwargs)
+
+        async def go():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                page = await browser.new_page()
+                site = {"siteId": "t", "url": "data:text/html,<p>x</p>", "credentials": {}}
+                agent = WebAgent(page, site, label="finalize-test", max_steps=2)
+                agent.client = Model([[call("note", fact="discount 7 %")], [call("read_page")]])
+                result = await agent.run("Find the discount. Finish with {\"percent\": <n>}")
+                await browser.close()
+                return result
+
+        old = telemetry.FLAGS
+        telemetry.FLAGS = set()
+        try:
+            result = asyncio.run(go())
+        finally:
+            telemetry.FLAGS = old
+        self.assertEqual((result["percent"], result["incomplete"], result["stopped"]), (7, True, "out of steps"))
+        self.assertEqual(result["notes"], ["discount 7 %"])

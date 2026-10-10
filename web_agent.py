@@ -217,8 +217,12 @@ class WebAgent:
                 await self.settle()
                 return await self.observe()
         else:
-            async with self.page.expect_download(timeout=15000) as info:
-                await control.click(timeout=10000)
+            try:
+                async with self.page.expect_download(timeout=6000) as info:
+                    await control.click(timeout=10000)
+            except Exception:  # no file came: the control opened a page, a frame or a viewer instead
+                await self.settle()
+                return "No download started; the control opened this instead:\n\n" + await self.observe()
             download = await info.value
             name, data = download.suggested_filename, open(await download.path(), "rb").read()
         return f"DOCUMENT {name} ({len(data)} bytes):\n" + documents.to_text(name, data)[:self.profile.text_limit * 2]
@@ -285,7 +289,7 @@ class WebAgent:
         options = self.profile.request_options(think)
         # A lost request must not stall the agent for the client's full timeout: short first, longer on retries
         # (a model waking up from idle can take minutes).
-        timeouts = (150, 240, 300) if think else (60, 120, 240)
+        timeouts = (45, 90, 180) if think else (30, 60, 120)
         for attempt in range(1, attempts + 1):
             try:
                 client = self.client.with_options(timeout=timeouts[min(attempt, len(timeouts)) - 1]) \
@@ -298,6 +302,30 @@ class WebAgent:
                 if attempt < attempts:
                     await asyncio.sleep(3 * attempt)
         return None
+
+    async def finalize(self, goal: str, reason: str) -> dict:
+        """The agent stopped without calling finish: turn its notes into the result the goal asks for with one
+        short model call, so nothing it found is lost. Marked incomplete either way."""
+        result: dict = {}
+        if self.notes:
+            prompt = (f"You worked on this goal but had to stop ({reason}):\n\n{goal}\n\nThese are the facts you "
+                      "confirmed, verbatim:\n" + "\n".join(f"- {n}" for n in self.notes) +
+                      "\n\nWrite the final result now, in exactly the JSON shape the goal asks for, using ONLY these "
+                      "facts (null or empty for anything not found). Answer with the JSON only.")
+            try:
+                reply = await self.client.with_options(timeout=60).chat.completions.create(
+                    model=self.profile.model, messages=[{"role": "user", "content": prompt}],
+                    **self.profile.request_options(False))
+                text = reply.choices[0].message.content or ""
+                result = json.loads(text[text.index("{"):text.rindex("}") + 1])
+            except Exception as error:
+                self.tel.event("errors", f"finalize failed: {str(error)[:200]}")
+        if not isinstance(result, dict):
+            result = {"raw": result}
+        result.update(incomplete=True, stopped=reason)
+        result.setdefault("notes", self.notes)
+        self.tel.finish(f"{reason} (finalized from {len(self.notes)} notes)")
+        return result
 
     def shrink_old_pages(self, messages: list) -> None:
         """Keep the newest page views (profile.keep_pages) in full; notes keep the facts from older ones."""
@@ -324,14 +352,15 @@ class WebAgent:
 
         for step in range(1, self.max_steps + 1):
             remaining = None if deadline is None else deadline - time.time()
+            if remaining is not None and remaining < 5:
+                return await self.finalize(goal, "deadline reached")
             if remaining is not None and remaining < 45:
                 messages.append({"role": "user", "content": "Time is almost up: call finish now with what you have."})
             self.shrink_old_pages(messages)
             started = time.time()
             reply = await self.call_model(messages, tools, step)
             if reply is None:  # the model stayed unreachable (or the run already ended): keep what we have
-                self.tel.finish("model unreachable")
-                return {"incomplete": True, "model_unreachable": True, "notes": self.notes}
+                return await self.finalize(goal, "model unreachable")
             self.tel.model_call(step, self.profile.model, reply, time.time() - started, thinking=self.thinks())
             message = reply.choices[0].message
             self.tel.event("model", f"step {step}: model says: {(message.content or '').strip()[:200]}", step=step,
@@ -376,5 +405,4 @@ class WebAgent:
                 if name not in ("note", "read_page"):
                     self.in_trouble = content.startswith(TROUBLE)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-        self.tel.finish("out of steps")
-        return {"incomplete": True, "notes": self.notes}
+        return await self.finalize(goal, "out of steps")

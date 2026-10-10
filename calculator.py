@@ -46,6 +46,14 @@ def day(value) -> date | None:
     if not value:
         return None
     text = str(value)
+    labelled = re.search(r"(\d{1,2})/(\d{1,2})\s*\((TT|DD)/MM\)\s*·?\s*(\d{4})|(\d{1,2})/(\d{1,2})\s*\(MM/(TT|DD)\)\s*·?\s*(\d{4})", text)
+    if labelled:  # the sites label the order: "05/01 (TT/MM) 2027" is 5 January, "01/17 (MM/TT) 2027" 17 January
+        g = labelled.groups()
+        d, m, y = (g[0], g[1], g[3]) if g[0] else (g[5], g[4], g[7])
+        try:
+            return date(int(y), int(m), int(d))
+        except ValueError:
+            return None
     for pattern, order in ((r"(\d{4})-(\d{2})-(\d{2})", "ymd"), (r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", "dmy"),
                            (r"(\d{1,2})/(\d{1,2})/(\d{2,4})", "mdy")):
         m = re.search(pattern, text)

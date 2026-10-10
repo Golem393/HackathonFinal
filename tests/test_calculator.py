@@ -21,6 +21,8 @@ class Parsing(unittest.TestCase):
         self.assertEqual(str(calc.day("2027-03-04T10:00Z")), "2027-03-04")
         self.assertEqual(str(calc.day("04.03.2027, 10:00")), "2027-03-04")
         self.assertEqual(str(calc.day("03/04/2027")), "2027-03-04")
+        self.assertEqual(str(calc.day("05/01 (TT/MM) 2027")), "2027-01-05")
+        self.assertEqual(str(calc.day("01/17 (MM/TT) · 2027")), "2027-01-17")
 
     def test_half_up(self):
         self.assertEqual(calc.cents(Decimal("2.345")), Decimal("2.35"))

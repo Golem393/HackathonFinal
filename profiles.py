@@ -46,15 +46,15 @@ PROFILES = {
     # Fetches one thing from the mailbox for another agent (TAN, address, a named mail).
     "mail": Profile("mail", thinking="auto", max_steps=25),
     # Reads approvals and rule mails (discount, Konditionsregeln, bonus bands...) and decides which applies.
-    "mail_research": Profile("mail_research", thinking="on", max_steps=40, keep_pages=3),
+    "mail_research": Profile("mail_research", thinking="auto", max_steps=50, keep_pages=3),
     # Walks the tender portal's submission flow and fills in values it is given.
     "tender_submit": Profile("tender_submit", thinking="auto", max_steps=90),
     # Reads the tender, bill of quantities and Q&A.
-    "tender_research": Profile("tender_research", thinking="on", max_steps=50, keep_pages=3),
+    "tender_research": Profile("tender_research", thinking="auto", max_steps=50, keep_pages=3),
     # Finds one position's material and commercial facts in the ERP.
     "erp_position": Profile("erp_position", thinking="auto", max_steps=45),
     # Reads the current specification revision on the supplier portal.
-    "spec": Profile("spec", thinking="on", max_steps=40, keep_pages=3),
+    "spec": Profile("spec", thinking="auto", max_steps=40, keep_pages=3),
     # Anything else.
     "default": Profile("default", thinking="auto", max_steps=60),
 }
