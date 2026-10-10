@@ -23,9 +23,10 @@ COMMON = """You research our sales mailbox (webmail) for the bid on tender refer
 {scenario_date}. Only records for EXACTLY this reference count (look-alikes such as "{reference}-A" do not); records
 dated after the scenario date never apply. Drafts, local previews and unsent messages never count, whatever they say.
 You are already logged in. First read the search field's help text on the page and follow it (how terms combine,
-what to include, result limits). Rule mails and older approvals are often filed in the ARCHIVE folder: open the archive
-and search there as well as in the inbox, with the reference plus ONE topic word; read the whole result list
-(read_all_pages) and open EVERY mail whose subject matches, since look-alikes exist. For each, check before you use it:
+what to include, result limits). Mails are filed in different places: rule mails and older approvals are often in the
+ARCHIVE. Search EVERY folder and mailbox the webmail offers (inbox, archive, any other folders, shared or team
+mailboxes), each with the reference plus ONE topic word; read the whole result list (read_all_pages) and open EVERY
+mail whose subject matches, since look-alikes exist. For each, check before you use it:
 its status (a draft, local preview or unsent message never counts), its date (after the scenario date never counts)
 and its sender. Copy subject, sender, date, status and body verbatim (tables as text), noting each find with `note`.
 Look ONLY for what is asked below; finish as soon as you have it from inbox and archive.
