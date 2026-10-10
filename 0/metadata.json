@@ -1,0 +1,94 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4JXDKG4AWDKHBWN87MME047",
+  "session_id": "1b51c788-7cf1-45db-aa60-b5b79aed1e45",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T12:43:24.476242962Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "38843ae6bf4e",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 4,
+    "cache_creation_tokens": 111482,
+    "cache_read_tokens": 0,
+    "output_tokens": 116,
+    "api_call_count": 3
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-login-2026-10-10T12:42:50.921868229Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "login"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "38843ae6bf4e",
+      "timestamp": "2026-10-10T12:42:50.921868229Z",
+      "native": {
+        "command": "/login"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/login",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-10-10T12:43:24.472268715Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 184,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 184,
+    "total_lines_changed": 184,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 186,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".agents/hooks.json": 28,
+        ".codex/hooks.json": 88,
+        ".github/hooks/entire.json": 68,
+        "AGENTS.md": 1,
+        "CLAUDE.md": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 184,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".agents/hooks.json": 28,
+        ".codex/hooks.json": 88,
+        ".github/hooks/entire.json": 68
+      }
+    }
+  ]
+}
