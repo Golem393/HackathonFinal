@@ -47,7 +47,7 @@ TENDER_FORMAT = """{
   "clarifications": [{"number": "<Q&A number>", "date": "<as shown>", "text": "<answer verbatim>",
                       "position": "<position or null>", "new_quantity": <number or null>,
                       "withdraws": "<number of the answer it withdraws, or null>",
-                      "amendment": {"revision": "...", "requirement": "...", "attributes": {"<attribute>": <value>}} or null,
+                      "amendment": {"revision": "...", "requirement": "...", "attributes": {"<stroke_mm / bore_mm / pressure_bar / mounting / certification>": <value>}} or null,
                       "keys": {"<key type, e.g. konditionsgruppe / verpackung / termin / ruestpool>": "<value>"} or null}],
   "problems": "<anything unclear or not found>"
 }"""

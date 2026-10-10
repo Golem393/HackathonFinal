@@ -56,6 +56,14 @@ class Rules(unittest.TestCase):
         self.assertEqual(r["R1"]["stroke_mm"], 250)  # amendment to the current revision
         self.assertEqual(r["R1"]["bore_mm"], 50)     # amendment to another revision ignored
 
+    def test_amendment_attribute_names_are_normalized(self):
+        tender = {"positions": [], "clarifications": [
+            {"number": "1", "date": "22.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "485 mm"}}},
+            {"number": "2", "date": "23.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "482 mm"}}},
+            {"number": "3", "date": "24.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Befestigung": "Flansch"}}}]}
+        r = calc.final_requirements(tender, SPEC)["R1"]
+        self.assertEqual((r["stroke_mm"], r["mounting"], r["bore_mm"]), (482, "Flansch", 50))   # latest per attribute
+
     def test_condition_and_scale(self):
         conditions = [{"valid_from": "01.01.2029", "valid_to": "31.12.2029", "scales": [{"from_quantity": 1, "price": 9}]},
                       {"valid_from": "01.01.2030", "valid_to": "31.12.2030", "price_unit": "per 100 Stück",

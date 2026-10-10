@@ -99,6 +99,39 @@ def final_quantities(tender: TenderFacts, spec: SpecFacts) -> dict[str, Decimal]
     return result
 
 
+ATTRIBUTE_NAMES = (  # how amendments may name an attribute (German or English, any case) -> our key
+    (("stroke", "hub", "stellweg", "weg"), "stroke_mm"), (("bore", "bohrung", "durchmesser"), "bore_mm"),
+    (("pressure", "druck"), "pressure_bar"), (("mounting", "befestigung", "montage", "anbau"), "mounting"),
+    (("certif", "zertifi", "zulassung", "norm"), "certification"),
+)
+
+
+def attribute_key(name: str) -> str | None:
+    lowered = str(name).lower()
+    if lowered in {key for _, key in ATTRIBUTE_NAMES}:
+        return lowered
+    for words, key in ATTRIBUTE_NAMES:
+        if any(word in lowered for word in words):
+            return key
+    return None
+
+
+def normalize_attributes(attributes: dict) -> dict:
+    """{"Hub/Stellweg": "482 mm"} -> {"stroke_mm": 482}: our keys, numbers without units for numeric attributes."""
+    result = {}
+    for name, value in (attributes or {}).items():
+        key = attribute_key(name)
+        if key is None:
+            continue
+        if key.endswith(("_mm", "_bar")):
+            number = num(re.sub(r"[a-zA-Z]+$", "", str(value).strip()))
+            if number is None:
+                continue
+            value = int(number) if number == number.to_integral_value() else float(number)
+        result[key] = value
+    return result
+
+
 def final_requirements(tender: TenderFacts, spec: SpecFacts) -> dict[str, Requirement]:
     """Rule 2 + scoped amendments: the current revision's requirements with the latest amendment per attribute that
     names that revision and requirement. (The usable-stroke reserve is added later: see advanced_components.)"""
@@ -112,7 +145,7 @@ def final_requirements(tender: TenderFacts, spec: SpecFacts) -> dict[str, Requir
         if str(c.get("number")) in withdrawn or str(a.get("revision", "")).strip().lower() != current:
             continue
         if a.get("requirement") in result:
-            result[a["requirement"]].update(a.get("attributes") or {})
+            result[a["requirement"]].update(normalize_attributes(a.get("attributes") or {}))
     return result
 
 
