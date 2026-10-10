@@ -1,0 +1,19 @@
+{
+  "setup": [
+    "uv",
+    "sync"
+  ],
+  "run": [
+    "env",
+    "AGENT_LOG=steps,pages,usage,errors,summary,notes,model",
+    "uv",
+    "run",
+    "--no-sync",
+    "python",
+    "agent.py"
+  ],
+  "models": [
+    "qwen"
+  ],
+  "browsers": 4
+}

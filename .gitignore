@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.tar.gz
+
+# dev-only scouting output (may contain scenario data; never commit or ship)
+dev/out/

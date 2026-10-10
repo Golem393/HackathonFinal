@@ -1,1 +1,3 @@
-# Project: EHL RFQ bid agent. See AGENTS.md.
+# Project: EHL RFQ bid agent
+
+@AGENTS.md
