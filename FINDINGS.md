@@ -47,6 +47,8 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 34 | Rule mails found late or never | Mail agent spent its budget elsewhere; searches too narrow | Order: own address, then rules others need early, then approvals, then the rest; inbox and archive; fallback searches | `research.MAIL_RESEARCH_GOAL` |
 | 35 | A position got no requirement, so no material and no quantity | The spec agent missed a requirement (viewer page numbering differs from the document) | Cross-check the spec against the requirement IDs the tender's positions reference; missing ones get a targeted follow-up search | `agent.spec_complete`, `research.SPEC_FOLLOWUP_GOAL` |
 | 36 | An agent froze for good after a click during navigation | Page reads (`evaluate`, `title`, `content`) have no timeout; a navigating frame can hang them | Every page read has a 5-10 s limit; every action a hard ceiling (90 s, tools 600 s) and counts as failed | `web_agent.observe`, `run` |
+| 37 | FX rate never found; searching the reference with the topic word found nothing | Rule mails are filed in the archive, with a look-alike (future-dated draft) next to the real one; the site's search help states how to search | Mail agents read the search help, search the archive as well, open every matching mail and check status, date and sender | `mail.COMMON` |
+| 38 | Single mail agent never reached the rule mails | One agent, many topics, gates on every page | One login, then focused topic agents (fx, tech, approvals, rules) in parallel tabs | `mail.py` |
 
 ## Still open
 

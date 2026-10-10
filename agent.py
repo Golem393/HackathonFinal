@@ -63,8 +63,9 @@ ASK_MAIL_GOAL = """In this webmail (our sales mailbox), a colleague on the tende
 {reference}: {request}
 
 Get exactly that and finish immediately: if it is already visible (e.g. in the page header), finish right away.
-If it is a mail that was just sent, check the inbox newest first; search with the reference plus a topic word if the
-list is long. Several similar mails may exist: take the most recent one for exactly this reference.
+If it is a mail that was just sent (a TAN, a code), it is at the top of the inbox without any search: refresh the inbox
+and open the newest matching mail. Several similar mails may exist: take the most recent one for exactly this
+reference; drafts and previews never count.
 Finish with {{"answer": "<the code, TAN, link or text asked for, exactly as written>", "received": "...",
 "subject": "...", "details": "<anything else the colleague must know, e.g. validity>"}}."""
 

@@ -22,10 +22,13 @@ from web_agent import WebAgent
 COMMON = """You research our sales mailbox (webmail) for the bid on tender reference {reference}. Scenario date:
 {scenario_date}. Only records for EXACTLY this reference count (look-alikes such as "{reference}-A" do not); records
 dated after the scenario date never apply. Drafts, local previews and unsent messages never count, whatever they say.
-You are already logged in. Check the inbox AND the archive. Search with the reference plus ONE topic word (the search
-combines words with AND); if that finds nothing, try the topic word alone or the sender. Use read_all_pages for long
-result lists. Copy subject, sender, date and body verbatim (tables as text), noting each find with `note` right away.
-Look ONLY for what is asked below; finish as soon as you have it (or have checked inbox and archive).
+You are already logged in. First read the search field's help text on the page and follow it (how terms combine,
+what to include, result limits). Rule mails and older approvals are often filed in the ARCHIVE folder: open the archive
+and search there as well as in the inbox, with the reference plus ONE topic word; read the whole result list
+(read_all_pages) and open EVERY mail whose subject matches, since look-alikes exist. For each, check before you use it:
+its status (a draft, local preview or unsent message never counts), its date (after the scenario date never counts)
+and its sender. Copy subject, sender, date, status and body verbatim (tables as text), noting each find with `note`.
+Look ONLY for what is asked below; finish as soon as you have it from inbox and archive.
 
 {topic}
 
