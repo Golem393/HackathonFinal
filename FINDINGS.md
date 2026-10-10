@@ -46,6 +46,7 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 33 | Number formats mixed within one system | Each price record states its own format (e.g. en-US vs de-DE) | Agents convert with the stated format and also copy the shown text | `erp_agent.DETAILS_GOAL` |
 | 34 | Rule mails found late or never | Mail agent spent its budget elsewhere; searches too narrow | Order: own address, then rules others need early, then approvals, then the rest; inbox and archive; fallback searches | `research.MAIL_RESEARCH_GOAL` |
 | 35 | A position got no requirement, so no material and no quantity | The spec agent missed a requirement (viewer page numbering differs from the document) | Cross-check the spec against the requirement IDs the tender's positions reference; missing ones get a targeted follow-up search | `agent.spec_complete`, `research.SPEC_FOLLOWUP_GOAL` |
+| 36 | An agent froze for good after a click during navigation | Page reads (`evaluate`, `title`, `content`) have no timeout; a navigating frame can hang them | Every page read has a 5-10 s limit; every action a hard ceiling (90 s, tools 600 s) and counts as failed | `web_agent.observe`, `run` |
 
 ## Still open
 

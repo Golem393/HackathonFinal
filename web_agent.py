@@ -227,10 +227,10 @@ class WebAgent:
     async def observe(self, offset: int = 0) -> str:
         parts, controls = [], []
         for number, frame in enumerate(self.page.frames):
-            try:
-                info = await frame.evaluate(OBSERVE_JS, number)
+            try:  # evaluate has no timeout of its own: a frame that is navigating could hang it forever
+                info = await asyncio.wait_for(frame.evaluate(OBSERVE_JS, number), timeout=10)
             except Exception:
-                continue  # detached or cross-origin frame that is still loading
+                continue  # detached, cross-origin, still loading, or hanging frame
             if number and not (info["text"].strip() or info["controls"]):
                 continue
             header = "" if number == 0 else f"\n--- frame {number} ({frame.url}) ---\n"
@@ -242,8 +242,14 @@ class WebAgent:
         shown = text[offset:offset + limit]
         more = f"\n[... {len(text) - offset - limit} more characters: read_page offset={offset + limit}]" \
             if len(text) > offset + limit else ""
-        return (f"URL: {self.page.url}\nTitle: {await self.page.title()}\n\nTEXT:\n{shown}{more}\n\nCONTROLS:\n"
+        return (f"URL: {self.page.url}\nTitle: {await self.safe_title()}\n\nTEXT:\n{shown}{more}\n\nCONTROLS:\n"
                 + "\n".join(json.dumps(c, ensure_ascii=False) for c in controls))
+
+    async def safe_title(self) -> str:
+        try:
+            return await asyncio.wait_for(self.page.title(), timeout=5)
+        except Exception:
+            return ""
 
     def locate(self, control_id: str):
         frame_no = int(control_id.split(".")[0])
@@ -300,13 +306,13 @@ class WebAgent:
     async def needs_login(self) -> bool:
         """A visible password field on this site means: not logged in (start, or a session that expired)."""
         try:
-            return await self.page.locator("input[type=password]:visible").count() > 0
+            return await asyncio.wait_for(self.page.locator("input[type=password]:visible").count(), timeout=10) > 0
         except Exception:
             return False
 
     async def needs_gate(self) -> bool:
         try:
-            return bool(await self.page.evaluate(GATE_JS))
+            return bool(await asyncio.wait_for(self.page.evaluate(GATE_JS), timeout=10))
         except Exception:
             return False
 
@@ -345,7 +351,7 @@ class WebAgent:
         try:
             parts = []
             for number, frame in enumerate(self.page.frames):
-                html = await frame.content()
+                html = await asyncio.wait_for(frame.content(), timeout=10)
                 parts.append(html if number == 0 else f"\n<!-- ===== frame {number}: {frame.url} ===== -->\n{html}")
             telemetry.save_snapshot(self.label, step, action, self.page.url, await self.page.title(), "".join(parts), view)
         except Exception as error:  # a page that navigates away mid-read: skip this snapshot
@@ -373,7 +379,10 @@ class WebAgent:
         input (checkboxes, sliders, codes) are left for the model."""
         await self.page.keyboard.press("Escape")
         await self.page.wait_for_timeout(300)
-        return await self.page.evaluate(DISMISS_JS)
+        try:
+            return await asyncio.wait_for(self.page.evaluate(DISMISS_JS), timeout=10)
+        except Exception:
+            return ""
 
     async def read_all_pages(self, next_id: str, max_pages: int = 12) -> str:
         """Collect the text of every page of a model-chosen paged list, following its next-page control."""
@@ -566,8 +575,9 @@ class WebAgent:
                     self.tel.finish("finished")
                     return result
                 try:
-                    with self.tel.action(step, name):
-                        content = await self.act(name, args)
+                    with self.tel.action(step, name):   # hard ceiling: no single action may hang the agent
+                        limit = 600 if name in self.extra_tools else 90
+                        content = await asyncio.wait_for(self.act(name, args), timeout=limit)
                     if name != "type_credential" and await self.ensure_logged_in(deadline):
                         content = ("NOTE: a colleague just handled a login or access check on this tab. Continue "
                                    "with your goal from here.\n\n" + await self.observe())
