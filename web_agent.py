@@ -134,14 +134,21 @@ max value into it), tick every box the check asks for, type any code or receipt 
 As soon as the check is gone and the page's normal content shows, call finish; do nothing else.
 Finish with {"passed": true} or {"passed": false, "problem": "..."}."""
 
-# A gate: a visible unlock slider, or a "not a robot" style confirmation, inside the page. Words, not layouts.
+# A gate that is still LOCKED: a visible unlock slider below its maximum, or a visible, unticked "not a robot" style
+# box. A passed gate often stays on the page (slider at max, box ticked): that is not a gate any more.
 GATE_JS = """() => {
   const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-  if ([...document.querySelectorAll('input[type=range]')].some(visible)) return true;
-  const text = (document.body ? document.body.innerText : '').toLowerCase();
-  return /kein(e)? roboter|not a robot|nicht automatisiert|zum entsperren|unlock to continue|zugangsprüfung/.test(text)
-    && [...document.querySelectorAll('input[type=checkbox], button')].some(visible);
+  const words = /kein(e)? roboter|not a robot|nicht automatisiert|human|mensch/i;
+  const label = el => ((el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label')
+    || (el.closest('label') && el.closest('label').innerText) || '');
+  const lockedSlider = [...document.querySelectorAll('input[type=range]')]
+    .some(el => (visible(el) || (el.labels && [...el.labels].some(visible))) && !el.disabled
+      && Number(el.value) < Number(el.max || 100));
+  const robotBox = [...document.querySelectorAll('input[type=checkbox]')]
+    .some(el => !el.checked && !el.disabled && words.test(label(el))
+      && (visible(el) || (el.labels && [...el.labels].some(visible))));
+  return lockedSlider || robotBox;
 }"""
 
 # What logging in / passing a gate took on each site (by kind, then site URL): every site has its own flow, so the

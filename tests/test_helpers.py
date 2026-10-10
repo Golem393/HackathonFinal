@@ -159,3 +159,15 @@ class GateHandOver(unittest.TestCase):
         async def act(agent):
             return await agent.needs_gate()
         self.assertFalse(run("<h1>Posteingang</h1><input type=checkbox> Alle auswählen <button>Suchen</button>", act))
+
+
+class GateDetection(unittest.TestCase):
+    def test_locked_vs_passed(self):
+        async def act(agent):
+            return await agent.needs_gate()
+        locked = "<input type=range min=0 max=100 value=0><label><input type=checkbox> Ich bin kein Roboter</label>"
+        passed = "<input type=range min=0 max=100 value=100><label><input type=checkbox checked> Ich bin kein Roboter</label><p>Entsperrt</p>"
+        box_only = "<label><input type=checkbox> I am not a robot</label><button>Continue</button>"
+        self.assertTrue(run(locked, act))
+        self.assertFalse(run(passed, act))      # a passed gate that stays on the page is not a gate
+        self.assertTrue(run(box_only, act))
