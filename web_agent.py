@@ -75,6 +75,11 @@ TOOLS = [
     {"name": "back", "description": "Go back one page.", "parameters": {"type": "object", "properties": {}}},
     {"name": "read_page", "description": "Read the current page again, with more of its text (offset in characters).",
      "parameters": {"type": "object", "properties": {"offset": {"type": "integer"}}}},
+    {"name": "read_all_pages", "description": "Read a paged list or table to its end in one go: give the id of its "
+                                              "next-page control (button or link); every page's text comes back "
+                                              "together. Use it for result lists, Q&A pages, tables with pages.",
+     "parameters": {"type": "object", "properties": {"next_id": {"type": "string"},
+                                                     "max_pages": {"type": "integer"}}, "required": ["next_id"]}},
     {"name": "open_document", "description": "Read a document (CSV, TXT, ZIP, JSON, XML, PDF...) behind a link or "
                                              "download button you chose; returns its text. Use it for files the page "
                                              "itself does not show.",
@@ -89,6 +94,34 @@ TOOLS = [
 # Zero-width and other invisible characters that some pages put inside words ("T\u200be\u200br...") so that a model
 # no longer recognizes them; the reader sees the same text without them.
 INVISIBLE = re.compile("[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+# Closes the topmost open popup if it only informs (survey, maintenance notice, banner): returns what it closed.
+DISMISS_JS = """() => {
+  const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const popups = [...document.querySelectorAll('dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]')]
+    .filter(visible);
+  const popup = popups[popups.length - 1];
+  if (!popup) return '';
+  const name = (popup.getAttribute('aria-label') || popup.querySelector('h1,h2,h3')?.innerText || 'popup').trim();
+  if (popup.querySelector('input[type=range], input[type=checkbox]:not(:checked), input[type=text], input:not([type])'))
+    return '';  // a gate that needs input: the model solves it
+  const words = /^(×|✕|x|schließen|schliessen|close|später|spaeter|nicht jetzt|abbrechen|ablehnen|verstanden|ok|okay|ausblenden|überspringen|skip|dismiss|zur kenntnis genommen|weiter ohne)$/i;
+  const buttons = [...popup.querySelectorAll('button, [role=button], a')].filter(visible);
+  const close = buttons.find(b => words.test((b.innerText || b.getAttribute('aria-label') || '').trim()))
+    || buttons.find(b => /close|schlie/i.test(b.getAttribute('aria-label') || b.className || ''));
+  if (close) { close.click(); return name; }
+  if (popup.tagName === 'DIALOG' && popup.close) { popup.close(); return name + ' (closed)'; }
+  return '';
+}"""
+
+# Finds the enabled next-page control with the given label on the current page (after OBSERVE_JS numbered it).
+NEXT_JS = """(label) => {
+  const els = [...document.querySelectorAll('[data-agent-id]')];
+  const norm = s => (s || '').trim().replace(/\\s+/g, ' ');
+  const hit = els.find(e => norm(e.getAttribute('aria-label') || e.innerText || e.value).slice(0, 60) === label
+    && !e.disabled && e.getAttribute('aria-disabled') !== 'true');
+  return hit ? hit.getAttribute('data-agent-id') : null;
+}"""
+
 TROUBLE = ("NOTE:", "WARNING:", "Action failed", "Refused")  # results after which an "auto" profile thinks
 
 SYSTEM = """You operate a web browser through tools to reach a goal on one website. Each tool result shows the page:
@@ -142,6 +175,7 @@ class WebAgent:
         self.last_view = ""
         self.repeats: Counter = Counter()
         self.dialogs: list[str] = []
+        self.popups_closed: list[str] = []
         self.client = models.qwen()
         self.tel = telemetry.tracker(label)
         telemetry.redact(*(site.get("credentials") or {}).values())
@@ -227,12 +261,61 @@ class WebAgent:
             name, data = download.suggested_filename, open(await download.path(), "rb").read()
         return f"DOCUMENT {name} ({len(data)} bytes):\n" + documents.to_text(name, data)[:self.profile.text_limit * 2]
 
+    async def click(self, control) -> None:
+        """Click; if a popup covers the control, close the popup (Escape, then its close button) and click again.
+        Saves the model the failed click, the closing step and the retry."""
+        try:
+            await control.click(timeout=4000)
+            return
+        except Exception as error:
+            if "intercepts pointer events" not in str(error):
+                raise
+        closed = await self.dismiss_popup()
+        try:
+            await control.click(timeout=6000)
+        except Exception as error:
+            raise RuntimeError(f"{str(error).splitlines()[0]} (popup handling: {closed or 'nothing could be closed'})")
+        if closed:
+            self.popups_closed.append(closed)
+
+    async def dismiss_popup(self) -> str:
+        """Close the topmost dismissable popup: Escape first, then a close-like button inside it. Gates that ask for
+        input (checkboxes, sliders, codes) are left for the model."""
+        await self.page.keyboard.press("Escape")
+        await self.page.wait_for_timeout(300)
+        return await self.page.evaluate(DISMISS_JS)
+
+    async def read_all_pages(self, next_id: str, max_pages: int = 12) -> str:
+        """Collect the text of every page of a model-chosen paged list, following its next-page control."""
+        control = self.locate(next_id)
+        label = (await control.evaluate("e => (e.getAttribute('aria-label') || e.innerText || e.value || '').trim()"))[:60]
+        pages, seen = [], set()
+        for number in range(1, max(1, min(max_pages, 30)) + 1):
+            view = await self.observe()
+            text = view.split("TEXT:\n", 1)[-1].split("\n\nCONTROLS:", 1)[0]
+            if text in seen:
+                break
+            seen.add(text)
+            pages.append(f"=== page {number} ({self.page.url}) ===\n{text}")
+            # the same next-page control on the new page: same label, enabled
+            nxt = await self.page.evaluate(NEXT_JS, label)
+            if not nxt:
+                break
+            try:
+                await self.click(self.page.locator(f'[data-agent-id="{nxt}"]').first)
+            except Exception:
+                break
+            await self.settle()
+        joined = "\n\n".join(pages)
+        return (f"READ {len(pages)} PAGES (next control: {label!r})\n\n" + joined[:self.profile.text_limit * 3]
+                + "\n\nCurrent page now:\n" + await self.observe())
+
     async def act(self, name: str, args: dict) -> str:
         """Carry out one tool call; the result is the page afterwards (or the reason it failed)."""
         if "id" in args and not await self.locate(args["id"]).count():
             raise LookupError(f"No control {args['id']} on the current page; use an id from the latest page view.")
         if name == "click":
-            await self.locate(args["id"]).click(timeout=10000)
+            await self.click(self.locate(args["id"]))
         elif name == "type":
             field = self.locate(args["id"])
             if await field.get_attribute("type") == "range":
@@ -258,6 +341,8 @@ class WebAgent:
             await self.page.go_back(timeout=15000)
         elif name == "read_page":
             return await self.observe(int(args.get("offset") or 0))
+        elif name == "read_all_pages":
+            return await self.read_all_pages(args["next_id"], int(args.get("max_pages") or 12))
         elif name == "open_document":
             return await self.open_document(args["id"])
         elif name in self.extra_tools:
@@ -270,6 +355,9 @@ class WebAgent:
             return f"Unknown tool {name}."
         await self.settle()
         view = await self.observe()
+        if self.popups_closed:
+            view = "".join(f"POPUP CLOSED for you: {p}\n" for p in self.popups_closed) + "\n" + view
+            self.popups_closed.clear()
         if self.dialogs:
             view = "".join(f"BROWSER DIALOG (accepted) {d}\n" for d in self.dialogs) + "\n" + view
             self.dialogs.clear()

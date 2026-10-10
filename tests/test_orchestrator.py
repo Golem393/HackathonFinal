@@ -23,6 +23,7 @@ FACTS = {
     "mail-research": {"mailbox_address": "verkauf@firma.example", "bidder_domain": "firma.example", "approvals": [
         {"sender": "leitung@firma.example", "date": "01.01.2030", "reference": "T-9", "percent": 10}]},
     "erp-login": {"ready": True, "notes": ["menu has a search"]},
+    "tender-qa": {"clarifications": [{"number": "7", "date": "01.01.2030", "position": "1", "new_quantity": 5}]},
 }
 CONDITION = [{"valid_from": "01.01.2030", "valid_to": "31.12.2030", "currency": "EUR",
               "scales": [{"from_quantity": 1, "price": "100,00"}]}]
@@ -74,13 +75,14 @@ class Orchestrator(unittest.TestCase):
         finally:
             telemetry.FLAGS = old
         labels = [label for label, _ in FakeAgent.seen]
-        self.assertEqual(set(labels[:4]), {"tender-research", "spec", "mail-research", "erp-login"})
+        self.assertEqual(set(labels[:5]), {"tender-research", "tender-qa", "spec", "mail-research", "erp-login"})
         self.assertIn("erp 1", labels)
         erp_goal = dict(FakeAgent.seen)["erp 1"]
         self.assertIn('"catalogue_group": "G1"', erp_goal)       # requirement handed to the ERP agent
         self.assertIn("menu has a search", erp_goal)            # what the ERP login learned
         submit_goal = dict(FakeAgent.seen)["tender-submit"]
         self.assertIn("verkauf@firma.example", submit_goal)     # contact e-mail from the mail research
+        self.assertIn('"quantity_pieces": 5', erp_goal)          # Q&A quantity change reached the ERP phase
 
 
     def test_values_text(self):

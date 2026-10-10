@@ -15,12 +15,26 @@ Find and copy exactly as shown:
    Satz, ...) and the specification requirement each position references. Documents may be files (CSV, TXT, ZIP),
    embedded frames or behind an expression of interest: use open_document for files, and express interest
    (Teilnahme bekunden) if the documents require it.
-2. ALL bidder questions and answers (Q&A, Bieterfragen, Klarstellungen) for this tender, every page of them, oldest to
-   newest. For each answer: number, date, verbatim text, and what it does: a quantity change for a position, a
-   withdrawal (zurückziehen) of an earlier answer, a technical amendment (which specification revision and
-   requirement, which attributes), or an assignment of keys (Konditionsgruppe, packaging tariff / Verpackung,
-   delivery commitment / Termin, shared setup pool / Rüstpool, or similar).
-Note each finding with `note` as you go. Finish with exactly this JSON shape:
+2. Do NOT read the bidder Q&A: a colleague reads it in parallel. Leave "clarifications" empty.
+Note each finding with `note` as you go, and finish as soon as you have the positions. Finish with exactly this JSON
+shape:
+{format}"""
+
+QA_GOAL = """You read ALL bidder questions and answers (Q&A, Bieterfragen, Rückfragen, Klarstellungen) of one public
+tender on this tender portal, for our bid. Do NOT start or fill the bid submission, do not read other documents.
+
+Tender reference: {reference}. Scenario date: {scenario_date}.
+
+Open the tender's Q&A and read EVERY answer on EVERY page (use read_all_pages on the list's next-page control). Some
+details (dates, full text) may only show after expanding a row or pressing a button: open them. For each answer copy:
+number, date (as shown, with time and timezone), the answer verbatim, and what it does:
+- a quantity change for a position (new total quantity, in the position's unit),
+- a withdrawal (zurückziehen) of an earlier answer, by its number,
+- a technical amendment: which specification revision and requirement, which attributes and values,
+- assignments of keys for a position: Konditionsgruppe, packaging tariff (Verpackung), delivery commitment (Termin),
+  shared setup pool (Rüstpool), project bonus plan, or similar,
+- fees or other commercial statements (e.g. one-off setup costs for a position).
+Finish only after the last page. Finish with exactly this JSON shape (positions empty, clarifications filled):
 {format}"""
 
 SPEC_GOAL = """You read the buyer's technical specification for our bid on this supplier portal.
@@ -59,6 +73,10 @@ Finish with {"ready": true} or {"ready": false, "problem": "..."}."""
 
 def tender_goal(reference: str, scenario_date: str) -> str:
     return TENDER_RESEARCH_GOAL.format(reference=reference, scenario_date=scenario_date, format=TENDER_FORMAT)
+
+
+def qa_goal(reference: str, scenario_date: str) -> str:
+    return QA_GOAL.format(reference=reference, scenario_date=scenario_date, format=TENDER_FORMAT)
 
 
 def spec_goal(reference: str, buyer: str, scenario_date: str) -> str:

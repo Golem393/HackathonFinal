@@ -36,6 +36,8 @@ SUBMIT_GOAL = """You submit our company's bid on this tender portal. Our managem
 submission instructions exactly (participation, bidder registration, offer type, configurator, number format,
 acknowledgements, TAN signing, final confirmation).
 
+- Colleagues have ALREADY researched everything (documents, Q&A, prices). Do not read documents or Q&A: go straight
+  through the submission steps.
 - Tender reference and bidder details: as stated in the brief.{contact}
 - Offer type: the main offer for a bid, the waiver for a no-bid (the values tell you which).
 - When the form asks for positions, prices, discount or totals, call get_bid_values ONCE and enter exactly what it
@@ -207,6 +209,12 @@ async def solve(task: dict, page) -> dict | None:
     mail_task = asyncio.create_task(safely(
         WebAgent(mail_page, mail_site, label="mail-research", profile="mail_research")
         .run(research.mail_goal(reference, scenario_date), deadline=research_until), "mail-research"))
+    # The Q&A has its own agent in its own browser context on browser 1 (own session: no clash with the research tab).
+    qa_page = await (await page.context.browser.new_context(viewport={"width": 1280, "height": 800})).new_page() \
+        if page.context.browser else await page.context.new_page()
+    qa_task = asyncio.create_task(safely(
+        WebAgent(qa_page, tender_site, label="tender-qa", profile="tender_qa")
+        .run(research.qa_goal(reference, scenario_date), deadline=research_until), "tender-qa"))
     erp_login = asyncio.create_task(safely(
         WebAgent(erp_page, erp_site, label="erp-login", profile="site_login")
         .run(research.ERP_WARMUP_GOAL, deadline=research_until), "erp-login"))
@@ -214,8 +222,16 @@ async def solve(task: dict, page) -> dict | None:
     # Phase 2: ERP positions once tender and specification are known; results arrive one by one.
     erp_results: dict = {}
 
+    async def tender_facts_merged() -> dict:
+        positions, qa = await tender_task, await qa_task
+        merged = dict(positions)
+        merged["clarifications"] = qa.get("clarifications") or positions.get("clarifications") or []
+        return record("tender", merged)
+
+    merged_task = asyncio.create_task(tender_facts_merged())
+
     async def erp_phase() -> None:
-        tender, spec = await tender_task, await spec_task
+        tender, spec = await merged_task, await spec_task
         requirements = calculator.final_requirements(tender, spec)
         quantities = calculator.final_quantities(tender, spec)
         login = await erp_login
@@ -242,7 +258,7 @@ async def solve(task: dict, page) -> dict | None:
             await asyncio.wait_for(asyncio.shield(erp_task), timeout=max(5, values_by - time.time()))
         except asyncio.TimeoutError:
             log.event("errors", f"values deadline: ERP finished {len(erp_results)} positions")
-        tender = tender_task.result() if tender_task.done() else {}
+        tender = merged_task.result() if merged_task.done() else (tender_task.result() if tender_task.done() else {})
         spec = spec_task.result() if spec_task.done() else {}
         if not mail_task.done():
             try:
@@ -292,7 +308,7 @@ async def solve(task: dict, page) -> dict | None:
                            {"type": "object", "properties": {}}, get_bid_values)}
 
     # Browser 1 moves on to the submission right after its research, while the ERP still works.
-    tender_facts = await tender_task
+    tender_facts = await merged_task
     log.event("steps", f"tender facts: {len(tender_facts.get('positions') or [])} positions, "
                        f"{len(tender_facts.get('clarifications') or [])} clarifications")
     mail_facts = mail_task.result() if mail_task.done() else {}
@@ -306,7 +322,7 @@ async def solve(task: dict, page) -> dict | None:
     except Exception:
         pass
     log.event("bid", f"SUBMISSION: {json.dumps(result, ensure_ascii=False)[:1000]}", submission=result)
-    for running in (spec_task, mail_task, erp_login, erp_task):
+    for running in (spec_task, mail_task, qa_task, erp_login, erp_task):
         if not running.done():
             running.cancel()
     return None  # a "site" submission: the agent entered and confirmed the bid itself
