@@ -45,6 +45,7 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 32 | Calls slow with large context | Bulky tool results (paged lists, documents) stayed in context | All bulky results shrink like page views; smaller page text per view | `web_agent.shrink_old_pages`, `profiles.py` |
 | 33 | Number formats mixed within one system | Each price record states its own format (e.g. en-US vs de-DE) | Agents convert with the stated format and also copy the shown text | `erp_agent.DETAILS_GOAL` |
 | 34 | Rule mails found late or never | Mail agent spent its budget elsewhere; searches too narrow | Order: own address, then rules others need early, then approvals, then the rest; inbox and archive; fallback searches | `research.MAIL_RESEARCH_GOAL` |
+| 35 | A position got no requirement, so no material and no quantity | The spec agent missed a requirement (viewer page numbering differs from the document) | Cross-check the spec against the requirement IDs the tender's positions reference; missing ones get a targeted follow-up search | `agent.spec_complete`, `research.SPEC_FOLLOWUP_GOAL` |
 
 ## Still open
 
@@ -52,3 +53,4 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 - Rule mails (Konditionsregeln, Technikfreigabe, ...) are found late or not at all; the calculator's advanced
   components (`advanced_components`) are not implemented yet.
 - The ERP scout runs out of steps before it has mapped stock, conditions and status pages: coverage before depth.
+- Q&A rows reveal a hidden date only once per page render; read_all_pages may stop when the next control's label changes.

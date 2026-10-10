@@ -18,8 +18,8 @@ FACTS = {
     "tender-research": {"reference": "T-9", "positions": [
         {"position": "1", "quantity": 3, "unit": "Stück", "requirement": "R1"},
         {"position": "2", "quantity": 2, "unit": "Stück", "requirement": "R2"}], "clarifications": []},
-    "spec": {"current_revision": "B", "requirements": [{"id": "R1", "catalogue_group": "G1", "bore_mm": 40},
-                                                       {"id": "R2", "catalogue_group": "G2", "bore_mm": 50}]},
+    "spec": {"current_revision": "B", "requirements": [{"id": "R1", "catalogue_group": "G1", "bore_mm": 40}]},
+    "spec-followup": {"requirements": [{"id": "R2", "catalogue_group": "G2", "bore_mm": 50}]},
     "mail-research": {"mailbox_address": "verkauf@firma.example", "bidder_domain": "firma.example", "approvals": [
         {"sender": "leitung@firma.example", "date": "01.01.2030", "reference": "T-9", "percent": 10}]},
     "erp-login": {"ready": True, "notes": ["menu has a search"]},
@@ -82,6 +82,7 @@ class Orchestrator(unittest.TestCase):
         labels = [label for label, _ in FakeAgent.seen]
         self.assertEqual(set(labels[:5]), {"tender-research", "tender-qa", "spec", "mail-research", "erp-login"})
         self.assertIn("erp-scout", labels)
+        self.assertIn("R2", dict(FakeAgent.seen)["spec-followup"])      # missing requirement searched again
         self.assertEqual({l for l in labels if l.startswith("erp-find")}, {"erp-find G1", "erp-find G2"})
         self.assertEqual({l for l in labels if l.startswith("erp-detail")}, {"erp-detail M-G1", "erp-detail M-G2"})
         erp_goal = dict(FakeAgent.seen)["erp-find G1"]

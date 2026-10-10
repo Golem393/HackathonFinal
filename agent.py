@@ -230,9 +230,25 @@ async def solve(task: dict, page) -> dict | None:
     tender_task = asyncio.create_task(safely(
         WebAgent(page, tender_site, label="tender-research", profile="tender_research")
         .run(research.tender_goal(reference, scenario_date), deadline=research_until), "tender-research"))
-    spec_task = asyncio.create_task(safely(
-        WebAgent(spec_page, spec_site, label="spec", profile="spec")
-        .run(research.spec_goal(reference, facts.get("buyer") or "", scenario_date), deadline=research_until), "spec"))
+    async def spec_complete() -> dict:
+        """The specification, cross-checked against the requirements the tender's positions reference: any that are
+        missing get one targeted follow-up search on the same tab."""
+        spec = await WebAgent(spec_page, spec_site, label="spec", profile="spec") \
+            .run(research.spec_goal(reference, facts.get("buyer") or "", scenario_date), deadline=research_until)
+        positions = await tender_task
+        wanted = {p.get("requirement") for p in positions.get("positions") or [] if p.get("requirement")}
+        have = {r.get("id") for r in spec.get("requirements") or []}
+        missing = sorted(wanted - have)
+        if missing:
+            log.event("steps", f"spec: requirements {missing} missing, follow-up search")
+            more = await WebAgent(spec_page, spec_site, label="spec-followup", profile="spec") \
+                .run(research.spec_followup_goal(reference, missing, spec.get("current_revision")),
+                     deadline=max(research_until, time.time() + 120))
+            spec = dict(spec, requirements=list(spec.get("requirements") or [])
+                        + [r for r in more.get("requirements") or [] if r.get("id") in missing])
+        return spec
+
+    spec_task = asyncio.create_task(safely(spec_complete(), "spec"))
     mail_agent = WebAgent(mail_page, mail_site, label="mail-research", profile="mail_research")
     mail_task = asyncio.create_task(safely(
         mail_agent.run(research.mail_goal(reference, scenario_date), deadline=research_until), "mail-research"))

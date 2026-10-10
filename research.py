@@ -76,6 +76,18 @@ menu page (transactions, search) is shown. Then call finish right away; do not s
 Finish with {"ready": true} or {"ready": false, "problem": "..."}."""
 
 
+SPEC_FOLLOWUP_GOAL = """A colleague read the buyer's specification on this supplier portal for tender {reference} but did not
+find these requirements, which the tender's positions reference: {missing}. The revision marked current is
+{revision}. Find each of them in that revision: it may be on a later page, a page numbered differently than the
+document, a separate sheet or an attachment. Copy the same fields as before. Finish with exactly this JSON shape:
+{{"requirements": [{{"id": "...", "catalogue_group": "...", "bore_mm": <n>, "stroke_mm": <n>, "usable_stroke": <true/false>,
+  "pressure_bar": <n>, "mounting": "...", "certification": "...", "pieces_per_set": <n or null>}}], "problems": "..."}}"""
+
+
+def spec_followup_goal(reference: str, missing: list[str], revision: str) -> str:
+    return SPEC_FOLLOWUP_GOAL.format(reference=reference, missing=", ".join(missing), revision=revision or "unknown")
+
+
 def tender_goal(reference: str, scenario_date: str) -> str:
     return TENDER_RESEARCH_GOAL.format(reference=reference, scenario_date=scenario_date, format=TENDER_FORMAT)
 
