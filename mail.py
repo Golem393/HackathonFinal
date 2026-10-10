@@ -25,8 +25,9 @@ dated after the scenario date never apply. Drafts, local previews and unsent mes
 You are already logged in. First read the search field's help text on the page and follow it (how terms combine,
 what to include, result limits). Mails are filed in different places: rule mails and older approvals are often in the
 ARCHIVE. Search EVERY folder and mailbox the webmail offers (inbox, archive, any other folders, shared or team
-mailboxes), each with the reference plus ONE topic word; read the whole result list (read_all_pages) and open EVERY
-mail whose subject matches, since look-alikes exist. For each, check before you use it:
+mailboxes), each with the reference plus ONE topic word, and ALSO with the reference plus the topic's sender (its
+local part with @, e.g. "finanzen@"), since subjects vary; read the whole result list (read_all_pages) and open EVERY
+mail whose subject or sender matches, since look-alikes exist. For each, check before you use it:
 its status (a draft, local preview or unsent message never counts), its date (after the scenario date never counts)
 and its sender. Copy subject, sender, date, status and body verbatim (tables as text), noting each find with `note`.
 Look ONLY for what is asked below; finish as soon as you have it from inbox and archive.
