@@ -122,6 +122,15 @@ NEXT_JS = """(label) => {
   return hit ? hit.getAttribute('data-agent-id') : null;
 }"""
 
+LOGIN_GOAL = """Log in to this website with your login (type_credential) and get past everything that stands between
+the login and the site's normal pages: cookie consent, notices, terms, blocking checks (sliders, checkboxes, codes
+shown on the page). The moment the site's normal content or menu is shown, call finish; do nothing else there.
+Finish with {"logged_in": true} or {"logged_in": false, "problem": "..."}."""
+
+# What logging in took on each site (by site URL): every site has its own login flow and gates, so the next login on
+# the same site (another tab, an expired session) starts from what worked.
+LOGIN_NOTES: dict[str, list[str]] = {}
+
 TROUBLE = ("NOTE:", "WARNING:", "Action failed", "Refused")  # results after which an "auto" profile thinks
 
 SYSTEM = """You operate a web browser through tools to reach a goal on one website. Each tool result shows the page:
@@ -260,6 +269,30 @@ class WebAgent:
             download = await info.value
             name, data = download.suggested_filename, open(await download.path(), "rb").read()
         return f"DOCUMENT {name} ({len(data)} bytes):\n" + documents.to_text(name, data)[:self.profile.text_limit * 2]
+
+    async def needs_login(self) -> bool:
+        """A visible password field on this site means: not logged in (start, or a session that expired)."""
+        try:
+            return await self.page.locator("input[type=password]:visible").count() > 0
+        except Exception:
+            return False
+
+    async def ensure_logged_in(self, deadline: float | None) -> bool:
+        """Hand the tab to the login sub-agent when a login form shows; True when it did. The login agent itself
+        (profile site_login) never delegates."""
+        if self.profile.name == "site_login" or not self.site.get("credentials") or not await self.needs_login():
+            return False
+        self.tel.event("steps", "login form: handing over to the login agent")
+        known = LOGIN_NOTES.get(self.site["url"], [])
+        goal = LOGIN_GOAL + ("\n\nHow logging in went on this site before (same flow, values may differ):"
+                             + "".join(f"\n- {n}" for n in known[-8:]) if known else "")
+        result = await WebAgent(self.page, self.site, label=f"{self.label}-login", profile="site_login") \
+            .run(goal, deadline=deadline)
+        learned = [str(n) for n in result.get("notes") or []]
+        LOGIN_NOTES.setdefault(self.site["url"], []).extend(n for n in learned if n not in known)
+        self.notes.extend(f"(login) {n}" for n in learned[-3:])
+        self.last_view = ""
+        return True
 
     async def snapshot(self, step: int, action: str, view: str) -> None:
         """With the `html` log feature: keep the page's HTML (frames inlined after it) for offline study."""
@@ -440,10 +473,12 @@ class WebAgent:
         if not self.page.url.startswith(self.site["url"]):
             await self.page.goto(self.site["url"], timeout=30000)
             await self.settle()
+        await self.ensure_logged_in(deadline)
         messages = [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Website: {self.site['url']} ({self.site.get('siteId')}). "
-                                        f"You have its login; use type_credential.\n\nGOAL:\n{goal}\n\n"
+                                        f"You are logged in (a colleague handles logins; should a login form "
+                                        f"appear, just wait for it to be handled).\n\nGOAL:\n{goal}\n\n"
                                         f"Current page:\n{await self.observe()}"},
         ]
         self.tel.event("pages", f"profile {self.profile.name}: thinking {self.profile.thinking}, "
@@ -488,6 +523,9 @@ class WebAgent:
                 try:
                     with self.tel.action(step, name):
                         content = await self.act(name, args)
+                    if name != "type_credential" and await self.ensure_logged_in(deadline):
+                        content = ("NOTE: the session had expired; a colleague logged you in again. Continue with "
+                                   "your goal from here.\n\n" + await self.observe())
                 except Exception as error:
                     lines = str(error).splitlines()
                     blocker = next((l.strip() for l in lines if "intercepts pointer events" in l), "")

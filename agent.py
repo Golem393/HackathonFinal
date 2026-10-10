@@ -28,6 +28,7 @@ import models
 import research
 import run as contract
 import telemetry
+import web_agent
 from web_agent import WebAgent
 
 PLAYWRIGHT = None  # set by main(): the running Playwright, for browsers 2 to 4
@@ -218,7 +219,7 @@ async def solve(task: dict, page) -> dict | None:
     async def erp_login_and_scout() -> dict:
         """Browser 4 is free during phase 1: log in, then learn the ERP once for all later ERP agents."""
         login = await WebAgent(erp_page, erp_site, label="erp-login", profile="site_login") \
-            .run(research.ERP_WARMUP_GOAL, deadline=research_until)
+            .run(web_agent.LOGIN_GOAL, deadline=research_until)
         site_map = await erp_agent.scout(erp_page, erp_site, deadline=research_until)
         return {"login": login, "site_map": site_map}
 

@@ -95,3 +95,31 @@ class Snapshots(unittest.TestCase):
             self.assertIn("innen", html)                                  # frame content kept
             index = [_json.loads(l) for l in open(os.path.join(folder, "html", "index.jsonl"))]
             self.assertEqual([e["duplicate"] for e in index], [False, True])
+
+
+class LoginHandOver(unittest.TestCase):
+    def test_a_login_form_goes_to_the_login_agent_and_work_continues(self):
+        from unittest import mock
+
+        import web_agent
+
+        calls = []
+
+        class LoginStub(web_agent.WebAgent):
+            async def run(self, goal, *, deadline=None):
+                calls.append((self.label, self.profile.name, "Log in" in goal))
+                await self.page.set_content("<h1>Startseite</h1><a href='#'>Materialsuche</a>")
+                return {"logged_in": True, "notes": ["passed the gate"]}
+
+        async def act(agent):
+            agent.site = {"url": "about:blank", "credentials": {"username": "u", "password": "p"}}
+            with mock.patch.object(web_agent, "WebAgent", LoginStub):
+                first = await agent.ensure_logged_in(None)
+                second = await agent.ensure_logged_in(None)   # logged in now: nothing to do
+            return first, second, await agent.observe()
+
+        first, second, view = run("<form><input name=u><input type=password name=p><button>Anmelden</button></form>", act)
+        self.assertEqual((first, second), (True, False))
+        self.assertEqual(calls, [("helper-test-login", "site_login", True)])
+        self.assertIn("Materialsuche", view)
+        self.assertEqual(web_agent.LOGIN_NOTES["about:blank"], ["passed the gate"])   # remembered per site
