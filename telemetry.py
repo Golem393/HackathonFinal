@@ -11,6 +11,8 @@ Features:
     timing   how long model calls and actions take     notes    facts the model recorded with `note`
     errors   failed actions and exceptions             summary  totals per agent and overall, at the end
     facts    each research agent's full result         bid      the computed bid, in full, and the submission
+    html     a snapshot of every page an agent reached (HTML + the model's page view), in AGENT_LOG_DIR/html/
+             (only with AGENT_LOG_DIR; for studying the websites' layout offline; never on by default)
 
 Logins and other secrets registered with `redact()` are masked in every sink. Nothing here changes what the agents
 do: with AGENT_LOG=none they run exactly the same, only silently.
@@ -21,7 +23,7 @@ import sys
 import time
 from contextlib import contextmanager
 
-FEATURES = ("steps", "model", "pages", "usage", "timing", "notes", "errors", "summary", "facts", "bid")
+FEATURES = ("steps", "model", "pages", "usage", "timing", "notes", "errors", "summary", "facts", "bid", "html")
 DEFAULT = "steps,usage,errors,summary,bid"
 
 # Simulated prices in USD per million tokens, as published for the hosted models (input, cached input, output).
@@ -72,6 +74,35 @@ def _write(record: dict, line: str) -> None:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, "events.jsonl"), "a") as file:
             file.write(_clean(json.dumps(record, ensure_ascii=False, default=str)) + "\n")
+
+
+def save_snapshot(agent: str, step: int, action: str, url: str, title: str, html: str, view: str) -> str | None:
+    """Keep one page as the agent saw it: <dir>/html/<agent>/<step>_<page>.html (+ .txt page view), listed in
+    html/index.jsonl. Identical pages are kept once. Secrets are masked like everywhere else."""
+    if not (LOG_DIR and enabled("html")):
+        return None
+    import hashlib
+    import re
+    html, view = _clean(html), _clean(view)
+    digest = hashlib.sha1(html.encode("utf-8", "replace")).hexdigest()[:12]
+    folder = os.path.join(LOG_DIR, "html", re.sub(r"\W+", "_", agent))
+    os.makedirs(folder, exist_ok=True)
+    seen = os.path.join(LOG_DIR, "html", ".seen")
+    known = set(open(seen).read().split()) if os.path.exists(seen) else set()
+    slug = re.sub(r"\W+", "_", url.split("://", 1)[-1].split("/", 1)[-1] or "root")[:60].strip("_") or "root"
+    name = f"{step:03d}_{action}_{slug}"
+    if digest not in known:
+        with open(os.path.join(folder, name + ".html"), "w") as file:
+            file.write(html)
+        with open(os.path.join(folder, name + ".txt"), "w") as file:
+            file.write(view)
+        with open(seen, "a") as file:
+            file.write(digest + "\n")
+    with open(os.path.join(LOG_DIR, "html", "index.jsonl"), "a") as file:
+        file.write(json.dumps({"t": round(time.time() - STARTED, 1), "agent": agent, "step": step, "action": action,
+                               "url": _clean(url), "title": _clean(title), "file": f"{os.path.basename(folder)}/{name}",
+                               "hash": digest, "duplicate": digest in known}, ensure_ascii=False) + "\n")
+    return name
 
 
 def cost_of(model: str, usage) -> float | None:

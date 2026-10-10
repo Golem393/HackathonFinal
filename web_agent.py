@@ -261,6 +261,19 @@ class WebAgent:
             name, data = download.suggested_filename, open(await download.path(), "rb").read()
         return f"DOCUMENT {name} ({len(data)} bytes):\n" + documents.to_text(name, data)[:self.profile.text_limit * 2]
 
+    async def snapshot(self, step: int, action: str, view: str) -> None:
+        """With the `html` log feature: keep the page's HTML (frames inlined after it) for offline study."""
+        if not telemetry.enabled("html") or action in ("note", "finish"):
+            return
+        try:
+            parts = []
+            for number, frame in enumerate(self.page.frames):
+                html = await frame.content()
+                parts.append(html if number == 0 else f"\n<!-- ===== frame {number}: {frame.url} ===== -->\n{html}")
+            telemetry.save_snapshot(self.label, step, action, self.page.url, await self.page.title(), "".join(parts), view)
+        except Exception as error:  # a page that navigates away mid-read: skip this snapshot
+            self.tel.event("errors", f"snapshot failed: {str(error)[:120]}")
+
     async def click(self, control) -> None:
         """Click; if a popup covers the control, close the popup (Escape, then its close button) and click again.
         Saves the model the failed click, the closing step and the retry."""
@@ -483,6 +496,7 @@ class WebAgent:
                     self.tel.event("errors", f"step {step}: {name} failed: {reason}", step=step, tool=name,
                                    error=reason)
                     content = f"Action failed: {reason}\n\n" + await self.observe()
+                await self.snapshot(step, name, content)
                 self.tel.event("pages", f"step {step}: now {self.page.url} | {page_gist(content)}", step=step,
                                content=content)
                 key = (self.page.url, name, json.dumps(args, sort_keys=True))

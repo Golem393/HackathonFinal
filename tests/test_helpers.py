@@ -23,7 +23,7 @@ function go() { if (n < 3) { n++; show(); } if (n === 3) document.getElementById
 </script>"""
 
 
-def run(html, action):
+def run(html, action, flags=frozenset()):
     from playwright.async_api import async_playwright
 
     async def go():
@@ -39,7 +39,7 @@ def run(html, action):
                 await browser.close()
 
     old = telemetry.FLAGS
-    telemetry.FLAGS = set()
+    telemetry.FLAGS = set(flags)
     try:
         return asyncio.run(go())
     finally:
@@ -71,3 +71,27 @@ class Helpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Snapshots(unittest.TestCase):
+    def test_html_snapshots_are_written_once_and_masked(self):
+        import json as _json
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            old = telemetry.FLAGS, telemetry.LOG_DIR
+            telemetry.FLAGS, telemetry.LOG_DIR = {"html"}, folder
+            telemetry.redact("geheim-123")
+            try:
+                async def act(agent):
+                    await agent.snapshot(1, "click", "view one")
+                    await agent.snapshot(2, "click", "view again")   # same HTML: kept once
+                run('<p>Hallo geheim-123</p><iframe srcdoc="<b>innen</b>"></iframe>', act, flags={"html"})
+            finally:
+                telemetry.FLAGS, telemetry.LOG_DIR = old
+            files = sorted(os.listdir(os.path.join(folder, "html", "helper_test")))
+            self.assertEqual(files, ["001_click_about_blank.html", "001_click_about_blank.txt"])
+            html = open(os.path.join(folder, "html", "helper_test", files[0])).read()
+            self.assertNotIn("geheim-123", html)
+            self.assertIn("innen", html)                                  # frame content kept
+            index = [_json.loads(l) for l in open(os.path.join(folder, "html", "index.jsonl"))]
+            self.assertEqual([e["duplicate"] for e in index], [False, True])
