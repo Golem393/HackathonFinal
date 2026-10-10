@@ -47,6 +47,8 @@ PROFILES = {
     "site_gate": Profile("site_gate", thinking="auto", max_steps=12),
     # Fetches one thing from the mailbox for another agent (TAN, address, a named mail).
     "mail": Profile("mail", thinking="auto", max_steps=25),
+    # One mail topic (FX rates, technical reserves, approvals, other rule mails) in its own tab: short and focused.
+    "mail_topic": Profile("mail_topic", thinking="auto", max_steps=35, keep_pages=2),
     # Reads approvals and rule mails (discount, Konditionsregeln, bonus bands...) and decides which applies.
     "mail_research": Profile("mail_research", thinking="auto", max_steps=80, keep_pages=2),
     # Walks the tender portal's submission flow and fills in values it is given.

@@ -12,6 +12,7 @@ os.environ["HEADLESS"] = "1"
 
 import agent  # noqa: E402
 import erp_agent  # noqa: E402
+import mail  # noqa: E402
 import telemetry  # noqa: E402
 
 FACTS = {
@@ -20,7 +21,7 @@ FACTS = {
         {"position": "2", "quantity": 2, "unit": "Stück", "requirement": "R2"}], "clarifications": []},
     "spec": {"current_revision": "B", "requirements": [{"id": "R1", "catalogue_group": "G1", "bore_mm": 40}]},
     "spec-followup": {"requirements": [{"id": "R2", "catalogue_group": "G2", "bore_mm": 50}]},
-    "mail-research": {"mailbox_address": "verkauf@firma.example", "bidder_domain": "firma.example", "approvals": [
+    "mail-approvals": {"mailbox_address": "verkauf@firma.example", "bidder_domain": "firma.example", "approvals": [
         {"sender": "leitung@firma.example", "date": "01.01.2030", "reference": "T-9", "percent": 10}]},
     "erp-login": {"ready": True, "notes": ["menu has a search"]},
     "tender-qa": {"clarifications": [{"number": "7", "date": "01.01.2030", "position": "1", "new_quantity": 5}]},
@@ -67,6 +68,7 @@ class Orchestrator(unittest.TestCase):
                     for s in ("tender-portal", "customer-portal", "erp", "mail")]}
                 facts = {"reference": "T-9", "scenario_date": "2030-06-01", "buyer": "Stadt"}
                 with mock.patch.object(agent, "WebAgent", FakeAgent), mock.patch.object(erp_agent, "WebAgent", FakeAgent), \
+                        mock.patch.object(mail, "WebAgent", FakeAgent), \
                         mock.patch.object(agent, "brief_facts", mock.AsyncMock(return_value=facts)), \
                         mock.patch.dict(os.environ, {"RUN_SECONDS": "400"}):
                     await agent.solve(task, page)
@@ -80,7 +82,8 @@ class Orchestrator(unittest.TestCase):
         finally:
             telemetry.FLAGS = old
         labels = [label for label, _ in FakeAgent.seen]
-        self.assertEqual(set(labels[:5]), {"tender-research", "tender-qa", "spec", "mail-research", "erp-login"})
+        self.assertTrue({"tender-research", "tender-qa", "spec", "mail-login", "erp-login"} <= set(labels[:8]))
+        self.assertTrue({"mail-fx", "mail-tech", "mail-approvals", "mail-rules"} <= set(labels))   # mail topics
         self.assertIn("erp-scout", labels)
         self.assertIn("R2", dict(FakeAgent.seen)["spec-followup"])      # missing requirement searched again
         self.assertEqual({l for l in labels if l.startswith("erp-find")}, {"erp-find G1", "erp-find G2"})

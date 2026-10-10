@@ -24,6 +24,7 @@ from playwright.async_api import async_playwright
 import browsers
 import calculator
 import erp_agent
+import mail
 import models
 import research
 import run as contract
@@ -249,9 +250,8 @@ async def solve(task: dict, page) -> dict | None:
         return spec
 
     spec_task = asyncio.create_task(safely(spec_complete(), "spec"))
-    mail_agent = WebAgent(mail_page, mail_site, label="mail-research", profile="mail_research")
-    mail_task = asyncio.create_task(safely(
-        mail_agent.run(research.mail_goal(reference, scenario_date), deadline=research_until), "mail-research"))
+    mail_research = mail.MailResearch(mail_page, mail_site, reference, scenario_date)
+    mail_task = asyncio.create_task(safely(mail_research.run(deadline=research_until), "mail-research"))
     # The Q&A has its own agent in its own browser context on browser 1 (own session: no clash with the research tab).
     qa_page = await (await page.context.browser.new_context(viewport={"width": 1280, "height": 800})).new_page() \
         if page.context.browser else await page.context.new_page()
@@ -338,10 +338,7 @@ async def solve(task: dict, page) -> dict | None:
 
     def mail_knowledge() -> list[str]:
         """Everything noted about the mailbox so far: research (live, also while it runs), logins, gates, asks."""
-        notes = list(mail_agent.notes)
-        for memory in (web_agent.LOGIN_NOTES, web_agent.GATE_NOTES):
-            notes += memory.get(mail_site["url"], [])
-        return notes + asked_notes
+        return mail_research.notes() + asked_notes
 
     asked_notes: list[str] = []
 
@@ -389,8 +386,13 @@ async def solve(task: dict, page) -> dict | None:
     tender_facts = await merged_task
     log.event("steps", f"tender facts: {len(tender_facts.get('positions') or [])} positions, "
                        f"{len(tender_facts.get('clarifications') or [])} clarifications")
-    mail_facts = mail_task.result() if mail_task.done() else {}
-    address = mail_facts.get("mailbox_address")
+    address = None
+    for _ in range(30):   # the mail agents note the own address early; wait up to ~60 s for it, live
+        mail_facts = mail_task.result() if mail_task.done() else mail_research.merged()
+        address = mail_facts.get("mailbox_address")
+        if address or mail_task.done():
+            break
+        await asyncio.sleep(2)
     contact = f"\n- Contact e-mail for the bidder registration: {address}." if address else \
         "\n- Contact e-mail for the bidder registration: our mailbox's own address; get it with ask_mailbox."
     submit = WebAgent(page, tender_site, label="tender-submit", profile="tender_submit", extra_tools=tools)
