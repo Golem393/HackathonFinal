@@ -30,7 +30,11 @@ local part with @, e.g. "finanzen@"), since subjects vary; read the whole result
 more rows only when scrolled (use scroll with to_end on it), a paged list has a next-page control (read_all_pages).
 Open EVERY mail whose subject or sender matches, since look-alikes exist. For each, check before you use it:
 its status (a draft, local preview or unsent message never counts), its date (after the scenario date never counts)
-and its sender. Copy subject, sender, date, status and body verbatim (tables as text), noting each find with `note`.
+and its sender. After opening a matching mail, call `read_html`: it extracts the complete body and tables from the
+page HTML without scrolling the reading pane. It lists every frame separately; follow any reported frame/offset
+continuations until the chosen mail is complete. If the mail offers an HTML download, choose it with `open_document`;
+that tool downloads and extracts it too. Copy subject, sender, date, status and body verbatim (tables as text), noting
+each find with `note`.
 Look ONLY for what is asked below; finish as soon as you have it from inbox and archive.
 
 {topic}

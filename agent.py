@@ -33,6 +33,8 @@ import web_agent
 from web_agent import WebAgent
 
 PLAYWRIGHT = None  # set by main(): the running Playwright, for browsers 2 to 4
+DEFAULT_RUN_SECONDS = 20 * 60
+SUBMISSION_RESERVE_SECONDS = 60
 
 SUBMIT_GOAL = """You submit our company's bid on this tender portal. Our management's task brief is below: follow its
 submission instructions exactly (participation, bidder registration, offer type, configurator, number format,
@@ -65,7 +67,8 @@ ASK_MAIL_GOAL = """In this webmail (our sales mailbox), a colleague on the tende
 Get exactly that and finish immediately: if it is already visible (e.g. in the page header), finish right away.
 If it is a mail that was just sent (a TAN, a code), it is at the top of the inbox without any search: refresh the inbox
 and open the newest matching mail. Several similar mails may exist: take the most recent one for exactly this
-reference; drafts and previews never count.
+reference; drafts and previews never count. After opening it, use `read_html` to extract its complete HTML body without
+scrolling; follow a reported frame/offset continuation if necessary.
 Finish with {{"answer": "<the code, TAN, link or text asked for, exactly as written>", "received": "...",
 "subject": "...", "details": "<anything else the colleague must know, e.g. validity>"}}."""
 
@@ -206,15 +209,20 @@ async def safely(coroutine, label: str, fallback: dict | None = None) -> dict:
     return record(label, result) if isinstance(result, dict) else result
 
 
+def execution_budget(task: dict) -> float:
+    """Use at most 20 minutes even when a test-run sandbox stays open much longer."""
+    configured = float(os.environ.get("RUN_SECONDS", str(DEFAULT_RUN_SECONDS)))
+    remaining = contract.seconds_left(task)
+    return configured if remaining == float("inf") else min(remaining, configured)
+
+
 # ---- the run -----------------------------------------------------------------------------------------------------
 
 async def solve(task: dict, page) -> dict | None:
     log = telemetry.tracker("orchestrator")
-    seconds = contract.seconds_left(task)
-    if seconds == float("inf"):  # locally there is no clock: act like a scored run (RUN_SECONDS, default 20 min)
-        seconds = float(os.environ.get("RUN_SECONDS", "1200"))
+    seconds = execution_budget(task)
     start = time.time()
-    end = start + seconds - 60                      # submitted before this, whatever happens
+    end = start + seconds - SUBMISSION_RESERVE_SECONDS  # submit by minute 19 of the default 20-minute budget
     research_until = start + seconds * 0.45         # phase 1
     values_by = end - 300                           # the bid values must be ready: the submission needs ~5 min after
 
@@ -418,9 +426,7 @@ async def main() -> int:
         browser, page = await browsers.connect(playwright)
         global PLAYWRIGHT
         PLAYWRIGHT = playwright  # lets solve() attach to the run's other browsers
-        seconds = contract.seconds_left(task)
-        if seconds == float("inf"):
-            seconds = float(os.environ.get("RUN_SECONDS", "1200"))
+        seconds = execution_budget(task)
         try:  # hard stop: a hanging sub-agent must never run the clock out (a late answer scores 0)
             answer = await asyncio.wait_for(solve(task, page), timeout=max(30, seconds - 20))
         except asyncio.TimeoutError:

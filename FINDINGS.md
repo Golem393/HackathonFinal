@@ -50,6 +50,7 @@ run's private dataset (other websites, layouts, data). Rules for this file:
 | 37 | FX rate never found; searching the reference with the topic word found nothing | Rule mails are filed in the archive, with a look-alike (future-dated draft) next to the real one; the site's search help states how to search | Mail agents read the search help, search every folder and mailbox (inbox, archive, others), open every matching mail and check status, date and sender | `mail.COMMON` |
 | 38 | Single mail agent never reached the rule mails | One agent, many topics, gates on every page | One login, then focused topic agents (fx, tech, approvals, rules) in parallel tabs | `mail.py` |
 | 39 | Mails in a list were never seen | The list sits in a scroll area that loads rows only when scrolled; agents had no way to scroll | Scroll areas shown as controls; `scroll(id, to_end)` by mouse wheel until nothing new loads; prompt rule | `web_agent.scroll` |
+| 40 | Mail body was cut off in a scrolling reading pane | Page observation was limited and HTML downloads were treated as navigation | `read_html` extracts the complete DOM and frames without scrolling; downloaded HTML is converted directly to text | `web_agent.read_html`, `documents.py` |
 
 ## Still open
 

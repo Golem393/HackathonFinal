@@ -90,6 +90,13 @@ TOOLS = [
                                       "does; lists that load more when scrolled show their new rows. to_end=true keeps "
                                       "scrolling until nothing new loads.",
      "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "to_end": {"type": "boolean"}}}},
+    {"name": "read_html", "description": "Download/serialize the complete HTML of the current page and every frame, "
+                                            "then extract text and tables without scrolling. Use this after opening a "
+                                            "long e-mail or HTML document. The first call lists frames; if it reports "
+                                            "more text, continue with that frame and offset.",
+     "parameters": {"type": "object", "properties": {
+         "frame": {"type": "integer", "description": "Optional frame number from an earlier read_html result."},
+         "offset": {"type": "integer", "description": "Character offset within that frame; default 0."}}}},
     {"name": "read_all_pages", "description": "Read a paged list or table to its end in one go: give the id of its "
                                               "next-page control (button or link); every page's text comes back "
                                               "together. Use it for result lists, Q&A pages, tables with pages.",
@@ -301,14 +308,11 @@ class WebAgent:
         starts a download is clicked and the download read. ZIP files list and read their members."""
         control = self.locate(control_id)
         href = await control.get_attribute("href")
-        name, data = "", b""
+        name, data, content_type = "", b"", ""
         if href and not href.startswith(("javascript:", "#")):
             response = await self.page.context.request.get(urljoin(self.page.url, href), timeout=30000)
             name, data = href.rsplit("/", 1)[-1], await response.body()
-            if "text/html" in (response.headers.get("content-type") or "") and not name.lower().endswith((".csv", ".txt")):
-                await control.click(timeout=10000)   # an HTML page, not a file: just open it
-                await self.settle()
-                return await self.observe()
+            content_type = response.headers.get("content-type") or ""
         else:
             try:
                 async with self.page.expect_download(timeout=6000) as info:
@@ -318,7 +322,45 @@ class WebAgent:
                 return "No download started; the control opened this instead:\n\n" + await self.observe()
             download = await info.value
             name, data = download.suggested_filename, open(await download.path(), "rb").read()
-        return f"DOCUMENT {name} ({len(data)} bytes):\n" + documents.to_text(name, data)[:self.profile.text_limit * 2]
+        return (f"DOCUMENT {name} ({len(data)} bytes):\n"
+                + documents.to_text(name, data, content_type=content_type)[:self.profile.text_limit * 3])
+
+    async def read_html(self, frame_number: int | None = None, offset: int = 0) -> str:
+        """Extract the current DOM by frame, with continuation, independent of a reading pane's scroll state."""
+        frames = []
+        for number, frame in enumerate(self.page.frames):
+            try:
+                html = await asyncio.wait_for(frame.content(), timeout=10)
+            except Exception:
+                continue
+            text = documents.to_text(f"frame-{number}.html", html.encode("utf-8"), content_type="text/html")
+            if text.strip():
+                frames.append((number, frame.url, INVISIBLE.sub("", text)))
+        listing = "\n".join(f"frame {number}: {len(text)} characters; {url}" for number, url, text in frames)
+        if frame_number is not None:
+            selected = next((item for item in frames if item[0] == frame_number), None)
+            if not selected:
+                return f"HTML CONTENT: frame {frame_number} is unavailable. Frames found:\n{listing}"
+            number, url, text = selected
+            start = max(0, int(offset or 0))
+            limit = self.profile.text_limit * 3
+            chunk = text[start:start + limit]
+            end = start + len(chunk)
+            more = (f"\n[... {len(text) - end} more characters: read_html frame={number} offset={end}]"
+                    if end < len(text) else "\n[complete frame]")
+            return (f"HTML CONTENT frame {number} ({len(text)} characters; {url}), characters {start}-{end}:\n"
+                    + chunk + more)
+
+        # Show some content from every frame so a large mailbox shell cannot hide a smaller message-body iframe.
+        limit = self.profile.text_limit * 3
+        per_frame = max(1000, limit // max(1, len(frames)))
+        parts = ["HTML CONTENT (complete DOM available by frame; no scrolling needed):", listing]
+        for number, url, text in frames:
+            chunk = text[:per_frame]
+            more = (f"\n[... {len(text) - len(chunk)} more characters: read_html frame={number} "
+                    f"offset={len(chunk)}]" if len(chunk) < len(text) else "\n[complete frame]")
+            parts.append(f"--- frame {number} ({url}) ---\n{chunk}{more}")
+        return "\n\n".join(parts)
 
     async def needs_login(self) -> bool:
         """A visible password field on this site means: not logged in (start, or a session that expired)."""
@@ -478,6 +520,9 @@ class WebAgent:
             return await self.observe(int(args.get("offset") or 0))
         elif name == "scroll":
             return await self.scroll(args.get("id"), bool(args.get("to_end")))
+        elif name == "read_html":
+            number = args.get("frame")
+            return await self.read_html(int(number) if number is not None else None, int(args.get("offset") or 0))
         elif name == "read_all_pages":
             return await self.read_all_pages(args["next_id"], int(args.get("max_pages") or 12))
         elif name == "open_document":
@@ -555,7 +600,8 @@ class WebAgent:
 
     def shrink_old_pages(self, messages: list) -> None:
         """Keep the newest page views (profile.keep_pages) in full; notes keep the facts from older ones."""
-        bulky = ("URL: ", "READ ", "DOCUMENT ", "No download", "POPUP CLOSED", "BROWSER DIALOG", *TROUBLE)
+        bulky = ("URL: ", "READ ", "DOCUMENT ", "HTML CONTENT", "No download", "POPUP CLOSED", "BROWSER DIALOG",
+                 *TROUBLE)
         pages = [m for m in messages if m["role"] == "tool" and m["content"].startswith(bulky)]
         for message in pages[:-self.profile.keep_pages]:
             message["content"] = message["content"].split("\n", 1)[0] + "\n[older page view dropped; see your notes]"
@@ -636,7 +682,7 @@ class WebAgent:
                     content = (f"WARNING: this is the {self.repeats[key]}th time you did exactly this here and it did "
                                "not get you further. Do something different: read the page for messages, look for "
                                "missing inputs, or use another tool.\n\n" + content)
-                if name not in ("note", "read_page"):
+                if name not in ("note", "read_page", "read_html"):
                     self.in_trouble = content.startswith(TROUBLE)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
         return await self.finalize(goal, "out of steps")

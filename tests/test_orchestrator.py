@@ -55,6 +55,17 @@ class FakeAgent:
 
 
 class Orchestrator(unittest.TestCase):
+    def test_execution_budget_is_capped_at_twenty_minutes(self):
+        with mock.patch.dict(os.environ, {"RUN_SECONDS": "1200"}), \
+                mock.patch.object(agent.contract, "seconds_left", return_value=7200):
+            self.assertEqual(agent.execution_budget({}), 1200)
+        with mock.patch.dict(os.environ, {"RUN_SECONDS": "1200"}), \
+                mock.patch.object(agent.contract, "seconds_left", return_value=600):
+            self.assertEqual(agent.execution_budget({}), 600)
+        with mock.patch.dict(os.environ, {"RUN_SECONDS": "1200"}), \
+                mock.patch.object(agent.contract, "seconds_left", return_value=float("inf")):
+            self.assertEqual(agent.execution_budget({}), 1200)
+
     def test_phases_and_values(self):
         from playwright.async_api import async_playwright
 

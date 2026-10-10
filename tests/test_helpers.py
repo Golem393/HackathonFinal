@@ -9,6 +9,7 @@ os.environ.setdefault("QWEN_BASE_URL", "http://127.0.0.1:9/unused")
 os.environ.setdefault("QWEN_API_KEY", "unused")
 
 import telemetry  # noqa: E402
+import documents  # noqa: E402
 from web_agent import WebAgent  # noqa: E402
 
 SURVEY = """<button onclick="document.body.insertAdjacentHTML('beforeend','<p>angemeldet</p>')">Teilnahme</button>
@@ -67,6 +68,52 @@ class Helpers(unittest.TestCase):
         for n in (1, 5, 9):
             self.assertIn(f"{n}", text)
         self.assertIn("Antwort 7, 8, 9", text)
+
+    def test_html_document_is_extracted_as_text_with_tables(self):
+        source = b"""<!doctype html><html><head><style>.x{display:none}</style></head><body>
+        <h1>Rate notice</h1><table><tr><th>FX key</th><th>Currency</th><th>EUR per unit</th></tr>
+        <tr><td>KEY-X</td><td>XYZ</td><td>1.2345</td></tr></table>
+        <script>do_not_include()</script></body></html>"""
+        text = documents.to_text("message.html", source, content_type="text/html")
+        self.assertIn("Rate notice", text)
+        self.assertIn("FX key\tCurrency\tEUR per unit", text)
+        self.assertIn("KEY-X\tXYZ\t1.2345", text)
+        self.assertNotIn("do_not_include", text)
+
+    def test_read_html_reads_past_a_clipped_mail_pane_without_scrolling(self):
+        html = """<h1>Message</h1><div style='height:12px;overflow:auto'>
+        <p>Beginning of mail</p><p>Middle of mail</p><table><tr><td>Final field</td><td>42</td></tr></table>
+        </div><script>not_mail_content()</script>"""
+        text = run(html, lambda a: a.act("read_html", {}))
+        self.assertIn("HTML CONTENT (complete DOM available by frame; no scrolling needed)", text)
+        self.assertIn("Beginning of mail", text)
+        self.assertIn("Final field\t42", text)
+        self.assertNotIn("not_mail_content", text)
+
+    def test_read_html_supports_frame_offsets_for_long_mail(self):
+        html = "<iframe srcdoc=\"<p>" + ("x" * 22000) + "</p><p>End marker</p>\"></iframe>"
+
+        async def read(agent):
+            first = await agent.act("read_html", {})
+            frame = 0
+            for number, item in enumerate(agent.page.frames):
+                if item.url == "about:srcdoc":
+                    frame = number
+                    break
+            rest = await agent.act("read_html", {"frame": frame, "offset": 21000})
+            return first, rest
+
+        first, rest = run(html, read)
+        self.assertIn("read_html frame=", first)
+        self.assertIn("End marker", rest)
+        self.assertIn("[complete frame]", rest)
+
+    def test_mail_goals_require_full_html_extraction(self):
+        import agent as orchestrator
+        import mail as mail_module
+
+        self.assertIn("`read_html`", mail_module.COMMON)
+        self.assertIn("`read_html`", orchestrator.ASK_MAIL_GOAL)
 
 
 if __name__ == "__main__":
