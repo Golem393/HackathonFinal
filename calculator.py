@@ -117,7 +117,7 @@ def attribute_key(name: str) -> str | None:
 
 
 def normalize_attributes(attributes: dict) -> dict:
-    """{"Hub/Stellweg": "482 mm"} -> {"stroke_mm": 482}: our keys, numbers without units for numeric attributes."""
+    """{"Hub/Stellweg": "250 mm"} -> {"stroke_mm": 250}: our keys, numbers without units for numeric attributes."""
     result = {}
     for name, value in (attributes or {}).items():
         key = attribute_key(name)

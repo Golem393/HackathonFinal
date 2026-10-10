@@ -58,11 +58,11 @@ class Rules(unittest.TestCase):
 
     def test_amendment_attribute_names_are_normalized(self):
         tender = {"positions": [], "clarifications": [
-            {"number": "1", "date": "22.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "485 mm"}}},
-            {"number": "2", "date": "23.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "482 mm"}}},
+            {"number": "1", "date": "22.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "310 mm"}}},
+            {"number": "2", "date": "23.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Hub/Stellweg": "305 mm"}}},
             {"number": "3", "date": "24.01.2030, 10:00", "amendment": {"revision": "C", "requirement": "R1", "attributes": {"Befestigung": "Flansch"}}}]}
         r = calc.final_requirements(tender, SPEC)["R1"]
-        self.assertEqual((r["stroke_mm"], r["mounting"], r["bore_mm"]), (482, "Flansch", 50))   # latest per attribute
+        self.assertEqual((r["stroke_mm"], r["mounting"], r["bore_mm"]), (305, "Flansch", 50))   # latest per attribute
 
     def test_condition_and_scale(self):
         conditions = [{"valid_from": "01.01.2029", "valid_to": "31.12.2029", "scales": [{"from_quantity": 1, "price": 9}]},
@@ -78,7 +78,7 @@ class Rules(unittest.TestCase):
             {"sender": "leitung@firma.example", "date": "02.01.2030", "reference": "T-1", "percent": 8,
              "min_order_value": "1.000,00"},
             {"sender": "leitung@firma.example", "date": "03.01.2030", "reference": "T-1-A", "percent": 20},
-            {"sender": "vertrieb@firma.example", "date": "04.01.2030", "reference": "T-1", "percent": 30}]}
+            {"sender": "einkauf@firma.example", "date": "04.01.2030", "reference": "T-1", "percent": 30}]}
         on = calc.day("10.01.2030")
         self.assertEqual(calc.approved_discount(mail, "T-1", on, Decimal(1000)), Decimal(8))   # threshold inclusive
         self.assertEqual(calc.approved_discount(mail, "T-1", on, Decimal(999)), Decimal(0))    # no fallback to 5 %

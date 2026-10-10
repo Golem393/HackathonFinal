@@ -17,6 +17,12 @@ loop, turns a public tender into one priced, signed bid:
 The run's `brief` holds the full bid rules and is the source of truth. Challenge page with all 29 rules:
 https://ehl-challenge.atira.ai/challenges/rfq.md
 
+## Findings log
+
+`FINDINGS.md` records why agents failed and the general fix for each. Add to it whenever a run shows a new failure.
+No website values in it (the reviewer rejects them in notes too); `tests/test_no_scenario_values.py` checks every
+tracked file against the facts of the last local run.
+
 ## Hard rules (package is reviewed by an AI before every scored run)
 
 - **No hardcoded scenario values** anywhere in the package (code, prompts, config, notes, defaults, fallbacks):
