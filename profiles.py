@@ -53,7 +53,13 @@ PROFILES = {
     "tender_research": Profile("tender_research", thinking="auto", max_steps=60, keep_pages=3),
     # Reads every bidder Q&A answer (quantity changes, withdrawals, amendments, keys, fees).
     "tender_qa": Profile("tender_qa", thinking="auto", max_steps=80, keep_pages=3, text_limit=12000),
-    # Finds one position's material and commercial facts in the ERP.
+    # Learns the ERP's navigation once and writes a site map for the others.
+    "erp_scout": Profile("erp_scout", thinking="auto", max_steps=40),
+    # Finds the active material matching one requirement (candidates, attributes, status).
+    "erp_finder": Profile("erp_finder", thinking="auto", max_steps=50),
+    # Reads one material's conditions, stock, lead times, carton, masses via the site map's pages.
+    "erp_details": Profile("erp_details", thinking="auto", max_steps=35),
+    # (older single-agent ERP flow) one position's material and commercial facts.
     "erp_position": Profile("erp_position", thinking="auto", max_steps=80),
     # Reads the current specification revision on the supplier portal.
     "spec": Profile("spec", thinking="auto", max_steps=70, keep_pages=3),

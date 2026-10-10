@@ -215,9 +215,14 @@ async def solve(task: dict, page) -> dict | None:
     qa_task = asyncio.create_task(safely(
         WebAgent(qa_page, tender_site, label="tender-qa", profile="tender_qa")
         .run(research.qa_goal(reference, scenario_date), deadline=research_until), "tender-qa"))
-    erp_login = asyncio.create_task(safely(
-        WebAgent(erp_page, erp_site, label="erp-login", profile="site_login")
-        .run(research.ERP_WARMUP_GOAL, deadline=research_until), "erp-login"))
+    async def erp_login_and_scout() -> dict:
+        """Browser 4 is free during phase 1: log in, then learn the ERP once for all later ERP agents."""
+        login = await WebAgent(erp_page, erp_site, label="erp-login", profile="site_login") \
+            .run(research.ERP_WARMUP_GOAL, deadline=research_until)
+        site_map = await erp_agent.scout(erp_page, erp_site, deadline=research_until)
+        return {"login": login, "site_map": site_map}
+
+    erp_login = asyncio.create_task(safely(erp_login_and_scout(), "erp-scout"))
 
     # Phase 2: ERP positions once tender and specification are known; results arrive one by one.
     erp_results: dict = {}
@@ -234,7 +239,8 @@ async def solve(task: dict, page) -> dict | None:
         tender, spec = await merged_task, await spec_task
         requirements = calculator.final_requirements(tender, spec)
         quantities = calculator.final_quantities(tender, spec)
-        login = await erp_login
+        scouted = await erp_login
+        login, site_map = scouted.get("login") or {}, scouted.get("site_map")
         jobs = []
         for position in tender.get("positions") or []:
             req = dict(requirements.get(position.get("requirement")) or {})
@@ -247,7 +253,8 @@ async def solve(task: dict, page) -> dict | None:
             jobs.append(req)
         log.event("steps", f"ERP: {len(jobs)} positions in parallel tabs")
         await erp_agent.run_erp(erp_page.context, erp_site, jobs, scenario_date, deadline=values_by - 20,
-                                learned=[str(n) for n in login.get("notes") or []], results=erp_results)
+                                learned=[str(n) for n in login.get("notes") or []], results=erp_results,
+                                site_map=site_map)
         record("erp-positions", erp_results)
 
     erp_task = asyncio.create_task(safely(erp_phase(), "erp"))

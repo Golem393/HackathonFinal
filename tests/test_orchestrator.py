@@ -35,16 +35,21 @@ class FakeAgent:
     def __init__(self, page, site, *, label="", profile="", extra_tools=None, **_):
         self.label, self.tools = label, extra_tools or {}
 
+    values = ""
+
     async def run(self, goal, *, deadline=None):
         FakeAgent.seen.append((self.label, goal))
         await asyncio.sleep(0.05)
-        if self.label.startswith("erp "):
-            position = self.label.split()[1]
-            return {"position": position, "material_number": "M" + position, "price_conditions": CONDITION,
-                    "stock_available_pieces": 100, "lead_time_from_stock_weeks": 2, "lead_time_production_weeks": 9}
+        if self.label == "erp-scout":
+            return {"search": "search by description", "tips": ["status 03 = blocked"]}
+        if self.label.startswith("erp-find "):
+            return {"material_number": "M-" + self.label.split()[1], "match_evidence": "all equal"}
+        if self.label.startswith("erp-detail "):
+            return {"price_conditions": CONDITION, "stock_available_pieces": 100, "lead_time_from_stock_weeks": 2,
+                    "lead_time_production_weeks": 9}
         if self.label == "tender-submit":
-            values = await self.tools["get_bid_values"][2]({})
-            return {"submitted": True, "values": values}
+            FakeAgent.values = await self.tools["get_bid_values"][2]({})
+            return {"submitted": True}
         return FACTS.get(self.label, {})
 
 
@@ -76,13 +81,17 @@ class Orchestrator(unittest.TestCase):
             telemetry.FLAGS = old
         labels = [label for label, _ in FakeAgent.seen]
         self.assertEqual(set(labels[:5]), {"tender-research", "tender-qa", "spec", "mail-research", "erp-login"})
-        self.assertIn("erp 1", labels)
-        erp_goal = dict(FakeAgent.seen)["erp 1"]
-        self.assertIn('"catalogue_group": "G1"', erp_goal)       # requirement handed to the ERP agent
+        self.assertIn("erp-scout", labels)
+        self.assertEqual({l for l in labels if l.startswith("erp-find")}, {"erp-find G1", "erp-find G2"})
+        self.assertEqual({l for l in labels if l.startswith("erp-detail")}, {"erp-detail M-G1", "erp-detail M-G2"})
+        erp_goal = dict(FakeAgent.seen)["erp-find G1"]
+        self.assertIn('"catalogue_group": "G1"', erp_goal)       # requirement handed to the finder
+        self.assertIn("status 03 = blocked", erp_goal)          # the scout's site map
         self.assertIn("menu has a search", erp_goal)            # what the ERP login learned
         submit_goal = dict(FakeAgent.seen)["tender-submit"]
         self.assertIn("verkauf@firma.example", submit_goal)     # contact e-mail from the mail research
-        self.assertIn('"quantity_pieces": 5', erp_goal)          # Q&A quantity change reached the ERP phase
+        self.assertIn("Position 1: material M-G1, quantity 5 pieces", FakeAgent.values)   # Q&A change -> bid
+        self.assertIn("Position 2: material M-G2, quantity 2 pieces", FakeAgent.values)
 
 
     def test_values_text(self):
@@ -98,3 +107,31 @@ class Orchestrator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErpSharing(unittest.TestCase):
+    def test_positions_with_one_requirement_share_finder_and_details(self):
+        from playwright.async_api import async_playwright
+
+        async def go():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(headless=True)
+                context = await browser.new_context()
+                jobs = [{"position": p, "catalogue_group": "G9", "bore_mm": 63} for p in ("01.02", "01.03")]
+                with mock.patch.object(erp_agent, "WebAgent", FakeAgent):
+                    results = await erp_agent.run_erp(context, {"url": "https://erp.example"}, jobs, "2030-06-01",
+                                                      site_map={"search": "x"})
+                await browser.close()
+                return results
+
+        old = telemetry.FLAGS
+        telemetry.FLAGS = set()
+        FakeAgent.seen = []
+        try:
+            results = asyncio.run(go())
+        finally:
+            telemetry.FLAGS = old
+        labels = [label for label, _ in FakeAgent.seen]
+        self.assertEqual(labels, ["erp-find G9", "erp-detail M-G9"])
+        self.assertEqual({p: r["material_number"] for p, r in results.items()}, {"01.02": "M-G9", "01.03": "M-G9"})
+        self.assertEqual(results["01.03"]["stock_available_pieces"], 100)
