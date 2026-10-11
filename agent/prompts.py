@@ -248,7 +248,10 @@ Compare the results' references and dates, open the latest message for exactly {
 scenario date ({scenario_date}), unlock it if needed, read its original text and record it (sender, date, subject,
 reference, the full relevant content). Then call close_topic() with its subject, the reference as the message writes
 it, its date and its sender: the code checks them and tells you when a message cannot apply. If a topic is in no
-folder, try a shorter or another word, then close it as absent with the folders you searched. A topic marked "by
+folder, try a shorter or another word; if it still finds nothing, search the topic word alone and the authorized
+sender (e.g. finanzen): a message that applies to every tender (a rate sheet, a price list, an index update) carries no
+tender reference. Take the latest one valid on the scenario date, and any later correction of it, record it and close
+the topic with the reference left empty. Only then close a topic as absent, with the folders you searched. A topic marked "by
 sender" is the messages of an outside party (such as the buyer): their subjects are general ("Anfrage …", "AW: …") and
 the change sits in the text, so search the exact reference alone in every folder, open every message from that party,
 replies included, record each change it makes (which position or fact, the new value, the message's date) and close
