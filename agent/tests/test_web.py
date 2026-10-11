@@ -193,6 +193,16 @@ class Typing(unittest.TestCase):
                 await browser.close()
 
 
+class Failures(unittest.TestCase):
+    def test_a_browser_error_keeps_its_reason(self):
+        error = ('Locator.fill: Timeout 4000ms exceeded.\nCall log:\n  - waiting for locator("[data-agent-ref=\\"3\\"]")'
+                 '.first\n  -   locator resolved to <input name="code" data-agent-ref="3"/>\n  - attempting fill action\n'
+                 '  -   2 × waiting for element to be visible, enabled and editable\n  -     - element is not editable\n'
+                 '  -   - retrying fill action')
+        self.assertEqual(web.failure(error), "Locator.fill: Timeout 4000ms exceeded. (element is not editable)")
+        self.assertEqual(web.failure("plain"), "plain")
+
+
 class NumberFields(unittest.TestCase):
     def test_german_amounts_go_into_number_fields_as_plain_numbers(self):
         self.assertEqual(web.plain_number("512,46"), "512.46")
@@ -389,6 +399,18 @@ class Hold(unittest.TestCase):
                 view = await site.view()
                 ref = int(re.search(r'\[(\d+) button "Gedrückt halten"', view).group(1))
                 self.assertIn("entsperrt", await site.hold(ref, 2))
+                # a control that relabels itself when pressed shrinks away from the pointer and ends the hold
+                await page.set_content('<main><button id="h" type="button">Bitte lange festhalten zum Bestätigen</button>'
+                                       '<script>(() => { let t; const b = document.getElementById("h");'
+                                       'b.addEventListener("pointerdown", () => { b.textContent = "Halten"; t = setTimeout('
+                                       '() => { b.textContent = "Bestätigt"; b.disabled = true; }, 1500); });'
+                                       'const stop = () => { if (!b.disabled) { clearTimeout(t); b.textContent = '
+                                       '"Bitte lange festhalten zum Bestätigen"; } };'
+                                       'b.addEventListener("pointerup", stop); b.addEventListener("pointerleave", stop);'
+                                       '})();</script></main>')  # its own scope: the page ran a script before
+                view = await site.view()
+                ref = int(re.search(r'\[(\d+) button "Bitte lange', view).group(1))
+                self.assertIn("Bestätigt", await site.hold(ref, 2))
                 await page.set_content('<main><input id="i"><p id="k">-</p><script>document.getElementById("i")'
                                        '.addEventListener("keydown", (e) => { document.getElementById("k").textContent'
                                        ' = e.key; });</script></main>')

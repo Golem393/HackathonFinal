@@ -45,6 +45,18 @@ class Steps(unittest.TestCase):
         self.assertIsNone(self.guard.step_position(view))
 
 
+class Omissions(unittest.TestCase):
+    def test_omitting_a_position_the_bid_has_is_stopped_once(self):
+        view = step("02.02", {"Menge": ""}, "QX-22") + '\n[21 checkbox "Position auslassen (Teilpunkte)"]'
+        guard = submit.FormGuard(ANSWER, [])
+        problem = guard.omit_problem(view, "Position auslassen (Teilpunkte)")
+        self.assertIn("omits position 02.02", problem)
+        self.assertIn("unit price 90,00", problem)
+        self.assertIsNone(guard.omit_problem(view, "Position auslassen (Teilpunkte)"))  # a second time: done
+        self.assertIsNone(submit.FormGuard(ANSWER, ["02.02"]).omit_problem(view, "Position auslassen"))  # planned
+        self.assertIsNone(submit.FormGuard(ANSWER, []).omit_problem(view, "Weiter"))
+
+
 class OtherIds(unittest.TestCase):
     def test_bare_and_prefixed_position_ids(self):
         answer = {**ANSWER, "positions": [dict(ANSWER["positions"][0], position="10"),

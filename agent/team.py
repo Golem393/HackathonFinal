@@ -53,7 +53,11 @@ class Ledger:
             if entry.get("agent") == entry.get("site"):
                 entry.pop("agent")
             return json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        return "\n".join(compact(entry) for entry in self.entries) or "Nothing recorded yet."
+        records = "\n".join(compact(entry) for entry in self.entries) or "Nothing recorded yet."
+        conflicts = status_conflicts(self)
+        return records + ("\n\nRecords that disagree on a material's status (the newest is not always right; ask "
+                          "for a check of each in missing, from its website): " + "; ".join(conflicts)
+                          if conflicts else "")
 
     def text(self, topic: str | None = None, exclude_agent: str | None = None, limit: int = 200000) -> str:
         def matches(entry, words) -> bool:
@@ -490,16 +494,87 @@ HELPER_TASKS: list[asyncio.Task] = []  # every helper agent, stopped at the inve
 KEY = re.compile(r"\b[A-Z][A-Z0-9]*-\d+[A-Z0-9-]*\b")  # identifiers such as group keys and requirement ids
 
 
+def part_ids(ledger: Ledger, the_plan: dict) -> set[str]:
+    """The identifiers that tell one part of the materials work from another: the requirement ids and catalogue groups
+    as the specification side records them. Never the tender reference or a revision every part shares (runs #19 and
+    #20 refused every delegation after the first: "a helper already has" the reference)."""
+    ids: set[str] = set()
+
+    def walk(item):
+        if isinstance(item, list):
+            for part in item:
+                walk(part)
+        elif isinstance(item, dict):
+            for key, value in item.items():
+                if isinstance(value, str) and re.search(r"catalog|katalog|group|gruppe|requirement|anforderung|^id$",
+                                                        key, re.I):
+                    ids.update(KEY.findall(value))
+                walk(value)
+    for entry in ledger.entries:
+        if kind_of(the_plan, entry["site"]) not in ("tender", "erp"):
+            walk(entry["facts"])
+    return ids - {the_plan.get("tender_reference", "")}
+
+
+def material_record(entry: dict, site_id: str, keys: set[str]) -> bool:
+    """A record of this website about materials that holds the part's most specific identifier (its catalogue group
+    rather than a requirement id that other records may mention)."""
+    if entry["site"] != site_id or not keys:
+        return False
+    text = json.dumps(entry["facts"], ensure_ascii=False)
+    about = re.search(r"materi|artikel", entry.get("topic") or "", re.I) \
+        or re.search(r'"[^"]*(material|artikel)[^"]*"\s*:', text, re.I)
+    return bool(about) and max(keys, key=len) in text
+
+
 def helper_tools(site: web.Site, task: dict, the_plan: dict, ledger: Ledger, deadline: float,
-                 helpers: list) -> list:
+                 helpers: list, parts: list | None = None) -> list:
     """delegate(): the agent hands an independent part of its website's work (one requirement's materials) to a
-    helper agent in a new tab of the same browser; the model decides what to split, the code runs it in parallel."""
+    helper agent in a new tab of the same browser; the model decides what to split, the code runs it in parallel.
+    With every helper busy the part waits for the next free one (run #17: told to do it itself, the lead never did
+    and the part was missing at the gap check). `parts` collects each part with the task that works on it."""
     jobs: list[set[str]] = []
     refused = [0]  # jobs refused for want of recorded identifiers
+    parts = parts if parts is not None else []
+    waiting: set = set()  # queued parts: in `helpers` for the lead's final wait, not counted as running
+    gate = asyncio.Lock()
+    number = [1]
+
+    def running() -> int:
+        return sum(not helper.done() for helper in helpers if helper not in waiting)
+
+    async def start(job: str) -> tuple[asyncio.Task, str]:
+        number[0] += 1
+        name = f"{site.id}-{number[0]}"
+        tab = await site.spawn()  # a helper that ends early frees its place for the next part
+        first_view = await tab.goto(site.page.url)  # where the lead is: past the login and any entry notice
+        helpers.append(asyncio.create_task(investigate(
+            tab, task, the_plan, ledger, deadline, name=name, first_view=first_view,
+            extra=f"\nYour part of this website (the rest of the team's agents do the others): {job}\nDo only this "
+                  "part, record as you go, and call finish when it is done.")))
+        HELPER_TASKS.append(helpers[-1])
+        print(f"[{name}] started on: {job[:200]}", flush=True)
+        return helpers[-1], name
+
+    async def when_free(job: str, keys: set[str]):
+        try:
+            while time.time() < deadline - 90:
+                async with gate:
+                    if running() < HELPERS:
+                        helper, _ = await start(job)
+                        break
+                await asyncio.sleep(2)
+            else:
+                print(f"[{site.id}] a queued part got no helper in time: {job[:120]}", flush=True)
+                return None
+        except Exception as error:
+            print(f"[{site.id}] a queued part could not start ({type(error).__name__})", flush=True)
+            if keys in jobs:
+                jobs.remove(keys)
+            return None
+        return await helper
 
     async def delegate(job: str) -> str:
-        if sum(not helper.done() for helper in helpers) >= HELPERS:
-            return f"All {HELPERS} helpers are busy; do this part yourself."
         others = ledger.text(exclude_agent=site.id)
         # the tender reference is in every record and every job: it says nothing about the part (run #13)
         reference = the_plan.get("tender_reference", "")
@@ -527,27 +602,41 @@ def helper_tools(site: web.Site, task: dict, the_plan: dict, ledger: Ledger, dea
         if tender and named != ["(as written)"] and not any(key in tender for key in named):
             return ("No position of the tender refers to that requirement (the tender's records do not name it): "
                     "its materials are never needed. Delegate the requirements the positions use.")
-        if time.time() > deadline - 60:
-            return "Too little time is left for a helper; do this part yourself."
         known = ledger.text()
+        if time.time() > deadline - 60:
+            own = {key for key in KEY.findall(job) if key in known and key != reference}
+            parts.append({"keys": own & part_ids(ledger, the_plan) or own, "job": job, "task": None})
+            return "Too little time is left for a helper; do this part yourself."
         invented = [key for key in KEY.findall(job) if key not in known]
         if invented:  # run #8 delegated a requirement with a group key and attributes that no record held
             return (f"{', '.join(invented)} is in no record of the team: take the requirement's identifiers and "
                     "attributes exactly from the records (read_notes), then delegate again.")
-        keys = {key for key in KEY.findall(job) if key in known}
-        if keys and any(keys <= earlier for earlier in jobs):
-            return "A helper already works on that part; go on with another one."
-        name = f"{site.id}-{len(helpers) + 2}"
-        tab = await site.spawn()  # a helper that ends early frees its place for the next part
-        first_view = await tab.goto(site.page.url)  # where the lead is: past the login and any entry notice
-        jobs.append(keys)  # taken only once its helper has a tab
-        helpers.append(asyncio.create_task(investigate(
-            tab, task, the_plan, ledger, deadline, name=name, first_view=first_view,
-            extra=f"\nYour part of this website (the rest of the team's agents do the others): {job}\nDo only this "
-                  "part, record as you go, and call finish when it is done.")))
-        HELPER_TASKS.append(helpers[-1])
-        print(f"[{name}] started on: {job[:200]}", flush=True)
-        return f"Helper {name} works on this in another tab now: do not do it yourself; go on with the rest."
+        # the part's own identifiers (requirement, catalogue group), else whatever the job names but the reference
+        keys = {key for key in KEY.findall(job) if key in known and key != reference}
+        keys = keys & part_ids(ledger, the_plan) or keys
+        # a part a helper works on, waits for or has recorded is not started again, also not inside a broader job
+        # ("continue with A-1 to A-5", run #18 queued three such jobs; one of them misread two statuses)
+        taken = sorted(set().union(*(part["keys"] & keys for part in parts if part["keys"] & keys and (
+            (part["task"] is not None and not part["task"].done())
+            or any(material_record(entry, site.id, part["keys"]) for entry in ledger.entries))))) if keys else []
+        if taken:
+            return (f"A helper already has {', '.join(taken)} (working on it, waiting for a tab or recorded): "
+                    "read_notes() shows its records. Delegate one requirement per job, one that no helper has had.")
+        async with gate:
+            if running() < HELPERS:
+                helper, name = await start(job)
+                jobs.append(keys)  # taken only once its helper has a tab
+                parts.append({"keys": keys, "job": job, "task": helper})
+                return f"Helper {name} works on this in another tab now: do not do it yourself; go on with the rest."
+        jobs.append(keys)
+        waiter = asyncio.create_task(when_free(job, keys))
+        waiting.add(waiter)
+        helpers.append(waiter)
+        HELPER_TASKS.append(waiter)
+        parts.append({"keys": keys, "job": job, "task": waiter})
+        print(f"[{site.id}] queued for the next free helper: {job[:200]}", flush=True)
+        return (f"All {HELPERS} helpers are busy: this part is queued and starts in another tab as soon as one is "
+                "free. Do not do it yourself; go on with the rest.")
 
     return [(tool("delegate", "Start a helper on one independent part of this website's work, in another tab.",
                   {"job": {"type": "string", "description": "The part, with every identifier and attribute the "
@@ -560,6 +649,12 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
     kind = next((entry for entry in the_plan.get("sites", []) if entry.get("site_id") == site.id), {})
     reference = the_plan.get("tender_reference", "")
     checklist, helpers, lead, name = None, [], name is None, name or site.id
+    parts: list[dict] = []  # the parts this lead delegated, queued or was told to do itself
+
+    def open_parts() -> list[str]:
+        """Delegated parts that no helper is working on any more and no material record of this website holds."""
+        return [part["job"] for part in parts if (part["task"] is None or part["task"].done()) and part["keys"]
+                and not any(material_record(entry, site.id, part["keys"]) for entry in ledger.entries)]
     kinds = kinds_of(the_plan, site.id)
     if kinds and kinds[0] == "erp":
         helper = not lead and "Your part of this website" in extra
@@ -592,6 +687,10 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
                    if gap.get("site_id") == site.id and gap.get("fact")] if lead else []
         wanted = ("\n\nThe team's last check still misses from your website: " + "; ".join(missing)
                   + ". Look these up first.") if missing else ""
+        owed = open_parts() if lead else []
+        if owed:
+            wanted = ("\n\nNo record of your website holds these parts yet, and no helper works on them any more: "
+                      + " | ".join(web.short(job, 200) for job in owed) + ". Look them up yourself now.") + wanted
         return wanted + ("\n\nWhat the agents on the other websites have recorded so far (one line each; look for "
                          f"facts that your website's records depend on and that you have not looked up yet):\n{known}"
                          if known else "")
@@ -607,10 +706,10 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
         refusals = 0
     tools = web.toolbox(site) + record_tools(site, ledger, name) + (checklist.tools() if checklist else [])
     if "erp" in kinds and lead:
-        tools += helper_tools(site, task, the_plan, ledger, deadline, helpers)
+        tools += helper_tools(site, task, the_plan, ledger, deadline, helpers, parts)
     agent = Agent(name, prompts.BROWSER, tools, deadline, effort="low", stay_until=deadline - (90 if lead else 20),
                   refusals=refusals, news=news, check=checklist.check if checklist else None,
-                  enough=enough_refusing(ledger, name, site))
+                  enough=enough_refusing(ledger, name, site, pending=open_parts if lead else None))
     # time is the limit, not a step count: refused finishes count as steps too
     result = await agent.run(prompts.investigate(task["brief"], site, kind.get("holds", ""), reference, minutes,
                                                  first_view, extra), max_steps=400)
@@ -621,7 +720,7 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
     return result
 
 
-def enough_refusing(ledger: Ledger, name: str, site: web.Site | None = None, idle: int = 2):
+def enough_refusing(ledger: Ledger, name: str, site: web.Site | None = None, idle: int = 2, pending=None):
     """When to stop refusing an agent's early finish: never while it has recorded nothing (it waits for other
     websites' facts), else once `idle` refusals in a row brought no new value into the team's records (the same facts
     recorded again count for nothing). In run #8 the ERP agent was refused 28 times after its work was done, recorded
@@ -649,6 +748,8 @@ def enough_refusing(ledger: Ledger, name: str, site: web.Site | None = None, idl
 
     def enough() -> bool:
         if not any(own_work(entry) for entry in ledger.entries):
+            return False
+        if pending and pending():  # a part it delegated is neither worked on nor recorded (run #17)
             return False
         # only a gap check can tell that this website's part is complete: without one, or while it lists a fact
         # this website should give that no other agent has taken over, the agent keeps working (run #9 let the ERP
@@ -921,12 +1022,13 @@ INPUTS_SCHEMA = {
 
 
 async def solve(task: dict, the_plan: dict, ledger: Ledger, deadline: float,
-                hard_deadline: float = float("inf"), effort: str = "medium", name: str = "solver") -> dict | None:
+                hard_deadline: float = float("inf"), effort: str = "medium", name: str = "solver",
+                checks: list[str] | None = None) -> dict | None:
     agent = Agent(name, prompts.SOLVER, [], deadline, finish=INPUTS_SCHEMA, effort=effort,
                   hard_deadline=hard_deadline)
     inputs = await agent.run(prompts.solve(prompts.brief_for(task["brief"], prompts.FOR_ALL, task),
                                            {k: v for k, v in the_plan.items() if k not in ("tan_site_id",)},
-                                           ledger.for_solver()), max_steps=4)
+                                           ledger.for_solver(), checks), max_steps=4)
     if inputs is not None:
         inputs["tender_reference"] = the_plan.get("tender_reference") or inputs.get("tender_reference")
         inputs.setdefault("scenario_date", the_plan.get("scenario_date"))
@@ -951,6 +1053,43 @@ def blocked(status: str) -> bool:
     return bool(BLOCKED.search(head)) and not ACTIVE.search(head)
 
 
+def status_state(text: str) -> str | None:
+    """"active", "blocked" or None for a recorded status: by its words, else by its code and the legend next to it
+    ("03 | 01 freigegeben · 03 gesperrt" is blocked)."""
+    text = str(text or "")
+    if blocked(text):
+        return "blocked"
+    head = re.split(r"[;(·|]", text, maxsplit=1)[0]
+    if ACTIVE.search(head):
+        return "active"
+    code = re.fullmatch(r"\s*(\w{1,3})\s*", head)
+    meaning = code and re.search(rf"(?<!\w){re.escape(code.group(1))}\s*[=:–-]?\s*([^\W\d_]+(?:\s+[^\W\d_]+)?)",
+                                 text[len(head):])
+    if meaning:
+        return "blocked" if blocked(meaning.group(1)) else "active" if ACTIVE.search(meaning.group(1)) else None
+    return None
+
+
+def status_conflicts(ledger: Ledger) -> list[str]:
+    """Materials whose records disagree on whether they are active (run #18: a helper recorded the active material as
+    blocked and the blocked one as active, and the solver followed the newest records)."""
+    states: dict[str, dict[str, list[str]]] = {}
+    for entry in ledger.entries:
+        facts = entry.get("facts")
+        for item in facts if isinstance(facts, list) else [facts]:
+            if not isinstance(item, dict):
+                continue
+            material = next((str(value).strip() for key, value in item.items() if re.search(r"materi|artikel", key, re.I)
+                             and isinstance(value, str) and KEY.fullmatch(value.strip())), None)
+            status = " | ".join(str(value) for key, value in item.items()
+                                if re.search(r"status", key, re.I) and isinstance(value, (str, int)))
+            state = status_state(status) if material and status else None
+            if state:
+                states.setdefault(material, {}).setdefault(state, []).append(f"#{entry['n']} ({entry['agent']})")
+    return [f"{material}: active in {', '.join(found['active'])}; blocked in {', '.join(found['blocked'])}"
+            for material, found in states.items() if "active" in found and "blocked" in found]
+
+
 def normalize_no_bid(inputs: dict, ledger: Ledger):
     """A no_bid written in another shape than "a position without a material": a blocked candidate named as the
     material is no material; no positions at all take the last gap check's positions without their materials. The
@@ -971,6 +1110,46 @@ def no_bid_shown(inputs: dict) -> bool:
     return any(((position.get("requirement") or {}).get("catalogue_group")
                 or (position.get("requirement") or {}).get("id")) and not position.get("material_number")
                for position in inputs.get("positions") or [])
+
+
+def _position_key(value) -> tuple:
+    """A position id by its digit groups ("7.4" and "07.04" are one position); other ids as written."""
+    groups = re.findall(r"\d+", str(value or ""))
+    return tuple(int(group) for group in groups) if groups else (str(value or "").strip().casefold(),)
+
+
+def requirement_mismatches(inputs: dict, ledger: Ledger, the_plan: dict) -> list[str]:
+    """Positions whose requirement differs from the one the tender's own records name for them, the latest record
+    counting (run #19 bid the material of a requirement no position uses, although the tender portal had recorded
+    the corrected list)."""
+    tender = {s.get("site_id") for s in the_plan.get("sites", []) if "tender" in kinds_of(the_plan, s.get("site_id"))}
+    named: dict[tuple, str] = {}
+
+    def walk(item):
+        if isinstance(item, list):
+            for part in item:
+                walk(part)
+        elif isinstance(item, dict):
+            position = next((value for key, value in item.items() if isinstance(value, (str, int))
+                             and re.fullmatch(r"(position|pos|number|nr|no|oz)(_?(no|nr|number|id))?", key, re.I)), None)
+            requirement = next((value for key, value in item.items() if isinstance(value, str)
+                                and re.search(r"requirement|anforderung", key, re.I)), None)
+            if position is not None and requirement and len(requirement.strip()) <= 20 \
+                    and re.search(r"\d", requirement):
+                named[_position_key(position)] = requirement.strip().upper()
+            for value in item.values():
+                walk(value)
+    for entry in ledger.entries:
+        if entry["site"] in tender:
+            walk(entry["facts"])
+    problems = []
+    for position in inputs.get("positions") or []:
+        want = named.get(_position_key(position.get("position")))
+        have = str((position.get("requirement") or {}).get("id") or "").strip().upper()
+        if want and have and want != have:
+            problems.append(f"position {position.get('position')} uses requirement {have}, but the tender's latest "
+                            f"records name {want} for it")
+    return problems
 
 
 def mismatches(inputs: dict) -> list[str]:

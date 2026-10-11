@@ -34,8 +34,11 @@ How to work:
   code or word the page shows, exactly (look with screenshot() if it is a picture); answer a simple question (a sum);
   click the tiles or items the task names, or put them in the asked order; drag a piece onto its slot (drag(to=));
   scroll a terms box to its end (scroll()) when its checkbox stays locked.
-  Read the instruction next to the check first, then check that the page says it is unlocked; a check that resets
-  is done again. A third-party verification service you cannot pass is reported in a record, not worked around.
+  Read the instruction next to the check first, then check that the page says it is unlocked. Fill all its parts
+  in one fill() (a slider takes its end value there too), then press its button. A check that resets, or comes back
+  on every page with a new code, is normal: solve it again each time and go on with your work. It is never a fact to
+  record and never a reason to stop or to call something absent; only a check that needs what you do not have (a
+  phone, an SMS, an outside service) is reported in a record.
 - Access steps are part of using a website and you complete them yourself: accepting notices and terms, ticking
   confirmation checkboxes, dragging sliders, copying a code or receipt number shown on the page into the field that
   asks for it, and sending the request form that unlocks documents or messages. When such a form offers several
@@ -332,7 +335,9 @@ candidate there). Keep evidence
 fields and notes short: a few words each. Answer quickly; time is short."""
 
 
-def solve(brief: str, plan: dict, ledger: str) -> str:
+def solve(brief: str, plan: dict, ledger: str, checks: list[str] | None = None) -> str:
+    checked = ("\n\n# Code checks of the first answer against the records\n" + "\n".join(f"- {c}" for c in checks)
+               + "\nCorrect these, unless the records clearly show the first answer was right." if checks else "")
     return f"""# The brief
 {brief}
 
@@ -340,7 +345,7 @@ def solve(brief: str, plan: dict, ledger: str) -> str:
 {json.dumps(plan, ensure_ascii=False, separators=(",", ":"))}
 
 # Everything the investigators recorded, in order
-{ledger}
+{ledger}{checked}
 
 Call finish with the calculation inputs."""
 
@@ -350,7 +355,9 @@ SUBMITTER_RULES = """How to enter it:
 - Enter the values exactly as given below; they are already in the format the form needs. Fill every field the form
   has a value for; leave a field empty where the table says "(leave empty)". A position marked OMIT is left out using
   the form's option to omit a position. Every other position is entered, also one whose unit price is 0,00 (its
-  price was not found): its material, quantity and lead time still count.
+  price was not found): its material, quantity and lead time still count. Never type a placeholder (such as "TBD")
+  into a field: leave it empty, or, if the form cannot go on without a value the table does not have, omit that
+  position with the form's option and continue.
 - Never use the browser's back navigation: it clears the later steps. Work quickly: the portal session expires and
   unsaved entries are lost (if it expires, log in again and continue).
 - Check every preselected choice and set it to exactly what the brief asks for (the bid type, for one); a default
@@ -373,7 +380,8 @@ SUBMITTER_RULES = """How to enter it:
   the table's total before you enter it.
 - Popups (surveys, notices) can cover the form: close them with their × or close button.
 - At the signing step, first read the summary and call check_summary(); correct what differs on its step. Request
-  the signing TAN only when everything else is complete and the summary matches the bid. The page then
+  the signing TAN once everything that can be entered is entered and the summary matches as far as the form allows:
+  what cannot be completed or corrected on this form any more is no reason to leave the bid unsigned. The page then
   says which request it was (a request number): right after requesting, call get_tan(request=<that number>) and
   enter the TAN it returns at once (a TAN is valid for a few minutes, and a new request invalidates the previous
   one). If the TAN is refused as invalid or expired, request a new one and call get_tan again with the new number.
@@ -388,7 +396,8 @@ def submit(brief: str, table: str, first_view: str) -> str:
 
 # Your task
 Enter the bid below in this website and sign it, as the brief's submission section describes. This is the one and
-only submission: it must be complete and correct.
+only submission: enter it as completely and correctly as the form allows, and always sign it. A signed bid with gaps
+(a value left empty, a position omitted) still scores; an unsigned bid scores nothing.
 
 {SUBMITTER_RULES}
 

@@ -169,7 +169,7 @@ class Delegation(unittest.TestCase):
         try:
             [(_, delegate)] = team.helper_tools(Lead(), {}, {}, ledger, time.time() + 300, helpers)
             self.assertIn("works on this", await delegate("requirement R-2, group KG-17, positions 3 and 4"))
-            self.assertIn("already works", await delegate("group KG-17 for R-2"))
+            self.assertIn("already has KG-17, R-2", await delegate("group KG-17 for R-2"))
             self.assertIn("exactly as the other agents recorded", await delegate("requirement R-5, group KG-99"))
             self.assertIn("exactly as the other agents recorded", await delegate("requirement R-2, group pending"))
             await asyncio.gather(*helpers)
@@ -249,6 +249,113 @@ class HandedGaps(unittest.TestCase):
             fresh = team.enough_refusing(ledger, "werk")
             self.assertTrue([fresh(), fresh(), fresh()][-1])
         asyncio.run(check())
+
+
+class QueuedParts(unittest.TestCase):
+    def test_a_part_waits_for_the_next_free_helper(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        started, release = [], asyncio.Event()
+
+        async def fake_investigate(site, task, the_plan, ledger, deadline, **kwargs):
+            started.append(kwargs["name"])
+            await release.wait()
+
+        class Tab:
+            async def goto(self, url):
+                return "view"
+
+        class Lead:
+            id, page = "werk", SimpleNamespace(url="https://werk.example/")
+
+            async def spawn(self):
+                return Tab()
+
+        ledger = team.Ledger()
+        ledger.add("spec", "/r", "requirement", {"id": "R-2", "group": "KG-17"})
+        ledger.add("spec", "/r", "requirement", {"id": "R-3", "group": "KG-18"})
+        helpers, parts = [], []
+        original, places = team.investigate, team.HELPERS
+        team.investigate, team.HELPERS = fake_investigate, 1
+        try:
+            [(_, delegate)] = team.helper_tools(Lead(), {}, {}, ledger, time.time() + 300, helpers, parts)
+            self.assertIn("works on this", await delegate("requirement R-2, group KG-17"))
+            self.assertIn("queued", await delegate("requirement R-3, group KG-18"))
+            self.assertIn("already has KG-18, R-3", await delegate("group KG-18 for R-3"))  # queued counts as taken
+            await asyncio.sleep(0.1)
+            self.assertEqual(started, ["werk-2"])  # one place: the second part waits
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*helpers), 10)
+            self.assertEqual(started, ["werk-2", "werk-3"])
+        finally:
+            team.investigate, team.HELPERS = original, places
+        self.assertEqual([part["keys"] for part in parts], [{"R-2", "KG-17"}, {"R-3", "KG-18"}])
+
+    def test_the_reference_and_a_shared_revision_do_not_make_parts_overlap(self):
+        async def check():
+            async def fake_investigate(site, task, the_plan, ledger, deadline, **kwargs):
+                await asyncio.sleep(0.05)
+
+            class Tab:
+                async def goto(self, url):
+                    return "view"
+
+            class Lead:
+                id, page = "werk", SimpleNamespace(url="https://werk.example/")
+
+                async def spawn(self):
+                    return Tab()
+
+            plan = {"tender_reference": "AB-2030-11", "sites": [{"site_id": "tp", "kind": "tender"},
+                                                                {"site_id": "spec", "kind": "specification"}]}
+            ledger = team.Ledger()
+            ledger.add("tp", "/t", "tender", {"reference": "AB-2030-11", "positions": [{"number": "1", "requirement": "Q-1"},
+                                                                       {"number": "2", "requirement": "Q-2"}]})
+            for requirement, group in (("Q-1", "KG-17"), ("Q-2", "KG-18")):
+                ledger.add("spec", "/r", "requirement", {"requirement": {"id": requirement, "revision": "RV-77",
+                                                                         "catalogue_group": group}})
+            self.assertEqual(team.part_ids(ledger, plan), {"Q-1", "Q-2", "KG-17", "KG-18"})
+            original, team.investigate = team.investigate, fake_investigate
+            try:
+                [(_, delegate)] = team.helper_tools(Lead(), {}, plan, ledger, time.time() + 300, [], [])
+                self.assertIn("works on this", await delegate("AB-2030-11 RV-77: requirement Q-1, group KG-17"))
+                self.assertIn("works on this", await delegate("AB-2030-11 RV-77: requirement Q-2, group KG-18"))
+                self.assertIn("already has KG-18, Q-2", await delegate("AB-2030-11 RV-77: KG-18 for Q-2 again"))
+            finally:
+                team.investigate = original
+        asyncio.run(check())
+
+    def test_a_part_without_a_material_record_holds_the_lead(self):
+        ledger = team.Ledger()
+        ledger.add("werk", "/n", "ERP issue", "groups noted: KG-18 still to do", agent="werk")
+        self.assertFalse(team.material_record(ledger.entries[-1], "werk", {"R-3", "KG-18"}))  # a note, no material
+        ledger.add("werk", "/m", "material", {"material": "QX-9", "group": "KG-18"}, agent="werk-3")
+        self.assertTrue(team.material_record(ledger.entries[-1], "werk", {"R-3", "KG-18"}))
+        self.assertFalse(team.material_record(ledger.entries[-1], "other", {"R-3", "KG-18"}))
+        ledger.add("werk", "/p", "price", {"material": "QX-1", "price": "1234.56"}, agent="werk")
+        ledger.latest_inputs = {"missing": []}
+        open_now = ["requirement R-4, group KG-19"]
+        enough = team.enough_refusing(ledger, "werk", pending=lambda: open_now)
+        self.assertFalse(any([enough(), enough(), enough()]))  # an open part: never let go
+        open_now.clear()
+        self.assertTrue([enough(), enough(), enough()][-1])
+
+
+class RequirementMapping(unittest.TestCase):
+    def test_a_position_must_use_the_requirement_the_tender_names(self):
+        plan = {"sites": [{"site_id": "portal", "kind": "tender"}, {"site_id": "spec", "kind": "specification"}]}
+        ledger = team.Ledger()
+        ledger.add("portal", "/t", "tender", {"positions": [{"number": "02.01", "requirement": "Q-7"},
+                                                            {"number": "02.02", "requirement": "Q-9"}]})
+        ledger.add("portal", "/qa", "Q&A", [{"no": "4711", "text": "Position 02.02: Gruppe K-1"}])  # no requirement
+        ledger.add("spec", "/s", "specification", {"number": "02.02", "requirement": "Q-8"})  # not the tender's word
+        inputs = {"positions": [{"position": "2.1", "requirement": {"id": "Q-7"}},
+                                {"position": "02.02", "requirement": {"id": "Q-8"}}]}
+        self.assertEqual(team.requirement_mismatches(inputs, ledger, plan),
+                         ["position 02.02 uses requirement Q-8, but the tender's latest records name Q-9 for it"])
+        ledger.add("portal", "/t2", "tender", {"positions_corrected": [{"number": "02.02", "requirement": "Q-8"}]})
+        self.assertEqual(team.requirement_mismatches(inputs, ledger, plan), [])  # the latest record counts
 
 
 class HungStart(unittest.TestCase):

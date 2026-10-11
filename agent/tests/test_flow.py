@@ -26,7 +26,7 @@ class Flow(unittest.TestCase):
         async def investigate_all(*args):
             return None
 
-        async def submit(target, mail, task, answer, omitted, deadline, values):
+        async def submit(target, mail, task, answer, omitted, deadline, values, known=frozenset()):
             submitted.append(answer)
             return {"status": "submitted"}
 

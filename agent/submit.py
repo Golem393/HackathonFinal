@@ -45,6 +45,7 @@ def table(answer: dict, omitted: list[str], configurator: dict[str, dict] | None
 
 
 CONTINUE = re.compile(r"weiter|next|continue|fortfahren|speichern|save|übernehmen und|nächste", re.I)
+OMIT = re.compile(r"auslass|weglass|überspring|nicht anbieten|kein angebot|\bomit|\bskip|leave out|do not offer", re.I)
 TOTAL = re.compile(r"gesamt|total|summe|netto|\bnet\b", re.I)
 NOT_TOTAL = re.compile(r"brutto|gross|mwst|ust|vat|steuer|tax|rabatt|discount|nachlass|%|position|pos\.|menge|"
                        r"quantity|stück|einzel|unit|zeile|line|preis je|per piece", re.I)
@@ -134,6 +135,21 @@ class FormGuard:
                             "its line total). Enter that before you continue.")
         return None
 
+    def omit_problem(self, view: str, label: str) -> str | None:
+        """Before a control that omits the step's position: the bid has values for it (run #18 omitted a complete
+        position one click after the step opened). Once per position: a deliberate omission goes through."""
+        if not self.usable or not OMIT.search(label or ""):
+            return None
+        position = self.step_position(view)
+        if position is None or position in self.omitted or position not in self.rows \
+                or ("omit", position) in self.refused:
+            return None
+        self.refused.add(("omit", position))
+        values = "; ".join(f"{name} {value}" for name, value in self._values(self.rows[position]).items())
+        return (f"Not done: that omits position {position}, but the bid has its values ({values}, material "
+                f"{self.rows[position].get('material_number')}). Enter them on this step and continue instead. Only "
+                "if this position cannot be entered at all, do it again.")
+
     def step_problem(self, view: str, label: str) -> str | None:
         """Before a step's continue button: a net total field must hold the total; a position's step must hold its
         own row, completely."""
@@ -162,7 +178,9 @@ class FormGuard:
                        if not self._holds(entered, value)]
             if row.get("material_number") and not self._holds(entered, row["material_number"]):
                 missing.insert(0, f"material {row['material_number']}")
-            if not missing:
+            # a form that has no field for a value is not missing it (a teammate's eval form had no breakdown fields
+            # and every position step was refused once): only a step with fields still empty is told
+            if not missing or not re.search(r'\[\d+ [\w-]*input "[^"]*" value=""', view):
                 return None
             problem = (f"Still missing on the step for position {position}: {'; '.join(missing)}. Fill them (0,00 "
                        "included) before you continue, or click again to continue anyway.")
@@ -228,7 +246,7 @@ LOOKED: dict[tuple, list[str]] = {}  # per TAN website and request: pages where 
 
 
 async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, reference: str = "",
-                    request: str = "", brief: str = "", asks: str = "") -> str:
+                    request: str = "", brief: str = "", asks: str = "", known: frozenset = frozenset()) -> str:
     """The TAN from the mailbox: the message for `request` (the number the submission website gave the request),
     else the newest TAN message. It starts in a fresh tab: the page the mail investigator left can be stuck."""
     reader = mail
@@ -252,7 +270,7 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
         index = re.findall(r"\d+", asks or "")
         if len(tan) < 4 or tan in ("unknown", "none", "notfound", "unbekannt", "keine") \
                 or (reference and tan in _code(reference)) or (request and tan == _code(request)) \
-                or (index and tan in index):
+                or (index and tan in index) or tan in known:
             return ("That is not a TAN: copy the code itself from the message text (it is neither the tender "
                     "reference nor the request number in the subject). Open the message, unlock it, open its "
                     "original text, or call screenshot() to see it.")
@@ -275,13 +293,20 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
 
 
 async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict, omitted: list[str],
-                 deadline: float, configurator: dict[str, dict] | None = None) -> dict | None:
+                 deadline: float, configurator: dict[str, dict] | None = None, known: frozenset = frozenset()) -> dict | None:
+    """`known`: identifiers the team recorded while investigating; a TAN is new, so none of them is one (run #17 took
+    a delivery key from a Q&A answer for the TAN and lost a minute and a half before the deadline)."""
     guard = FormGuard(answer, omitted)
     told: set[tuple] = set()
 
     async def get_tan(request: str = "", asks: str = "") -> str:
         if mail is None:
             return "No mailbox website is known; look for the TAN where the brief says it arrives."
+        if not request.strip() and "no request" not in told and deadline - time.time() > 150:
+            told.add("no request")  # once: a website may send a TAN without naming a request
+            return ("No request number given. If the page has a control to request or send a TAN, use it first: the "
+                    "website then names the request. Call get_tan with that number. If a TAN was sent without one, "
+                    "call get_tan again.")
         problems = tuple(guard.summary_problems(site.full_view))
         if problems and not told and deadline - time.time() > 150:  # once: it may never keep the bid unsigned
             told.add(problems)
@@ -295,7 +320,7 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
         alive = asyncio.create_task(keep_form_alive())
         try:
             tan = await fetch_tan(mail, time.time(), time.time() + 120, answer.get("tender_reference", ""), request,
-                                  task.get("brief", ""), asks)
+                                  task.get("brief", ""), asks, known)
         finally:
             alive.cancel()
         if tan:
@@ -310,16 +335,33 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
             "The summary matches the bid (materials, unit prices, total)."
         return verdict + "\n\n" + view
 
-    async def click(ref) -> str:
+    def label_of(ref) -> str:
         line = re.search(rf"\[{int(ref)} [\w-]+ \"([^\"]*)\"", site.full_view)
-        problem = guard.step_problem(site.full_view, line.group(1) if line else "")
+        return line.group(1) if line else ""
+
+    async def click(ref) -> str:
+        label = label_of(ref)
+        problem = guard.omit_problem(site.full_view, label) or guard.step_problem(site.full_view, label)
         if problem:
             print(f"[submit] step check: {problem[:300]}", flush=True)
             return problem  # the page is unchanged: the agent's last view still shows it
         return await site.click(ref)
 
-    browsing = [(schema, click if schema["function"]["name"] == "click" else function)
-                for schema, function in web.toolbox(site)]
+    async def fill(fields: list[dict]) -> str:
+        for field in fields:  # ticking an "omit this position" box omits it just like a click
+            value = field.get("value")
+            if value is True or str(value).lower() in ("true", "1", "yes", "ja", "on"):
+                try:
+                    problem = guard.omit_problem(site.full_view, label_of(field.get("ref")))
+                except (TypeError, ValueError):
+                    problem = None
+                if problem:
+                    print(f"[submit] step check: {problem[:300]}", flush=True)
+                    return problem
+        return await site.fill(fields)
+
+    wrapped = {"click": click, "fill": fill}
+    browsing = [(schema, wrapped.get(schema["function"]["name"], function)) for schema, function in web.toolbox(site)]
     tools = browsing + web.configure_tool(site) + [(tool(
         "check_summary", "Compare the summary page with the bid.", {}), check_summary), (tool(
         "get_tan", "Read the signing TAN of your request.",
@@ -350,6 +392,15 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
         page_text = re.sub(r"\[\d+ [^\]]*\]", " ", site.full_view)  # without buttons, links and fields
         if len(quoted) < 6 or quoted not in re.sub(r"\s+", " ", page_text).lower():
             problems = guard.summary_problems(site.full_view)
+            if problems and ("summary told", tuple(problems)) in told:
+                # run #18 was told the same differences on every finish, went back and forth for minutes trying to
+                # repair a step the form no longer offered, and never signed
+                return ("The bid is not submitted yet. If the differences in the summary cannot be corrected on this "
+                        "form any more, sign the bid as it is now: request the TAN if needed, call "
+                        "get_tan(request=...), enter it and confirm. A signed partial bid scores; an unsigned one "
+                        "scores nothing. Then quote the website's confirmation exactly.")
+            if problems:
+                told.add(("summary told", tuple(problems)))
             return ("The bid is not submitted yet: the page does not show that as the website's confirmation (a "
                     "button or link label does not count). Complete the remaining steps: every position the form "
                     "asks for, the conditions and declarations, then at the signing step request the TAN, call "

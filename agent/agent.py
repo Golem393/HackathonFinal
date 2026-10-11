@@ -103,7 +103,9 @@ async def work(task: dict, sites: list[web.Site]) -> dict | None:
 
         mail = guarded(lambda: tan_site(the_plan, by_id, target), target)
         values = guarded(lambda: configurator_values(inputs), {})
-        result = await safely("submission", submit.submit(target, mail, task, answer, omitted, end - 20, values))
+        known = guarded(lambda: frozenset(submit._code(key) for key in team.KEY.findall(ledger.text())), frozenset())
+        result = await safely("submission", submit.submit(target, mail, task, answer, omitted, end - 20, values,
+                                                          known))
         log(f"[team] submission: {result}")
         return None  # a "site" submission is entered on the website, not returned
     finally:
@@ -123,12 +125,20 @@ async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, input
     """One targeted look for the facts the solver found missing, then a second solve. A no_bid stands only when the
     second solve, after a fresh look at the candidate list, agrees, or when the materials were checked and there is
     no time to look again."""
-    questions = follow_up_questions(inputs, the_plan, by_id)
+    questions = guarded(lambda: follow_up_questions(inputs, the_plan, by_id, ledger), {})
     no_bid_first, confirmed = bool(inputs and inputs.get("decision") == "no_bid"), False
+    checks = guarded(lambda: team.requirement_mismatches(inputs, ledger, the_plan), []) if inputs else []
+    if checks:
+        log(f"[team] requirement check: {checks}")
+    if checks and not questions and time.time() + SOLVE_SECONDS < submit_by:
+        # nothing to look up: the records already hold the answer, so only the solve is repeated, with the checks
+        second = await safely("solve", team.solve(task, the_plan, ledger, min(time.time() + SOLVE_SECONDS, submit_by),
+                                                  submit_by, checks=checks))
+        return second or inputs
     if questions and time.time() + 75 + 30 < submit_by:
         seconds = max(75.0, min(210.0, submit_by - time.time() - 100))
         log(f"[team] following up for {seconds:.0f} s on {questions}")
-        recorded = len(ledger.entries)
+        recorded, completed = len(ledger.entries), True
         until = time.time() + seconds
         mail_topics = [topic for topic, _ in team.gap_topics(inputs, the_plan, task["brief"])]
         try:  # a follow-up stuck on a page must never hold up the submission
@@ -137,15 +147,22 @@ async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, input
                                topics=mail_topics if kind_of(the_plan, site_id) == "mail" and mail_topics else None)
                 for site_id, asked in questions.items()), return_exceptions=True), seconds + 30)
         except asyncio.TimeoutError:
+            completed = False
             log("[team] the follow-up round did not end in time; going on with what is recorded")
         # only a first solve over the whole ledger may stand, not the gap check's older inputs (run #16 review)
         if len(ledger.entries) == recorded and inputs is not None and inputs is not ledger.latest_inputs \
-                and not no_bid_first:
+                and not no_bid_first and not checks:
             log("[team] the follow-up recorded nothing new: the first solve stands")
             return inputs
         second = await safely("solve", team.solve(task, the_plan, ledger, min(time.time() + SOLVE_SECONDS, submit_by),
-                                                  submit_by))
-        confirmed = bool(no_bid_first and second and second.get("decision") == "no_bid")
+                                                  submit_by, checks=checks))
+        # two solves over the same records are no confirmation by themselves (run #21: both said no_bid because the
+        # records lacked an amendment and a material, and the follow-up timed out): the second look at the
+        # materials must have been made and finished
+        looked = completed and any(site_id in questions for site_id in materials_sites(the_plan, by_id))
+        confirmed = bool(no_bid_first and second and second.get("decision") == "no_bid" and looked)
+        if no_bid_first and second and second.get("decision") == "no_bid" and not looked:
+            log("[team] the second solve also says no_bid, but the materials were not looked at again to the end")
         inputs = second or inputs
     elif no_bid_first:
         confirmed = materials_checked(inputs, ledger, the_plan)
@@ -207,7 +224,8 @@ def kind_of(the_plan: dict, site_id: str) -> str:
     return next((s.get("kind", "") for s in the_plan.get("sites", []) if s.get("site_id") == site_id), "")
 
 
-def follow_up_questions(inputs: dict | None, the_plan: dict, by_id: dict) -> dict[str, list[str]]:
+def follow_up_questions(inputs: dict | None, the_plan: dict, by_id: dict,
+                        ledger: team.Ledger | None = None) -> dict[str, list[str]]:
     """Per website, the facts the solver found missing; for a no_bid also every candidate of the groups without an
     active match, so that a no_bid is decided only on a complete candidate list (run #7 found the active
     alternative to a blocked first hit only minutes before the end)."""
@@ -225,6 +243,11 @@ def follow_up_questions(inputs: dict | None, the_plan: dict, by_id: dict) -> dic
                 questions.setdefault(materials, []).append(
                     f"every material of catalogue group {group} (all result pages) with its visible status and all "
                     f"attributes, for position {position.get('position')}; open each one not yet recorded")
+    materials = next(iter(materials_sites(the_plan, by_id)), None)
+    for conflict in (team.status_conflicts(ledger) if ledger else []) if materials else []:
+        questions.setdefault(materials, []).append(
+            f"records disagree on a material's status: {conflict}. Open that material's own record and record its "
+            "status exactly as the page shows it (the code and what the page says it means)")
     return questions
 
 

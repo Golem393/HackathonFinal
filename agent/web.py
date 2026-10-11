@@ -80,10 +80,10 @@ RENDER = r"""
     if (t === 'INPUT' || t === 'TEXTAREA') {
       const type = t === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
       if (type === 'checkbox' || type === 'radio') return `[${id} ${type} ${q(labelOf(el))}${el.checked ? ' checked' : ''}${el.required ? ' required' : ''}${off}]`;
-      if (['submit', 'button', 'reset', 'image'].includes(type)) return `[${id} button ${q(clip(el.value || labelOf(el) || type, 80))}${off}]`;
+      if (['submit', 'button', 'reset', 'image'].includes(type)) return `[${id} button ${q(clip(el.value || labelOf(el) || el.getAttribute('alt') || type, 80))}${off}]`;
       if (type === 'file') return `[${id} file-input ${q(labelOf(el))}${off}]`;
       const kind = type === 'text' ? 'input' : `${type}-input`;
-      const hint = described(el) + (type === 'number' ? ['min', 'max', 'step'].filter((a) => el.getAttribute(a)).map((a) => ` ${a}=${el.getAttribute(a)}`).join('') : '');
+      const hint = described(el) + (type === 'number' || type === 'range' ? ['min', 'max', 'step'].filter((a) => el.getAttribute(a)).map((a) => ` ${a}=${el.getAttribute(a)}`).join('') : '');
       return `[${id} ${kind} ${q(labelOf(el))} value=${q(clip(el.value, 120))}${el.readOnly ? ' readonly' : ''}${el.required ? ' required' : ''}${hint ? ` about=${q(hint)}` : ''}${off}]`;
     }
     if (t === 'SELECT') {
@@ -94,7 +94,9 @@ RENDER = r"""
       return `[${id} select ${q(labelOf(el))} selected=${q(chosen)} options: ${list}${opts.length > 40 ? ` | … ${opts.length - 40} more` : ''}${hint ? ` about=${q(hint)}` : ''}${el.required ? ' required' : ''}${off}]`;
     }
     const role = el.getAttribute('role') || (t === 'A' ? 'link' : (t === 'BUTTON' || t === 'SUMMARY') ? 'button' : 'clickable');
-    const text = clip(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || el.value || '', 100);
+    const pictured = el.querySelector('img[alt]:not([alt=""]), [role=img][aria-label]');  // an icon-only control
+    const text = clip(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title')
+      || (pictured && (pictured.getAttribute('alt') || pictured.getAttribute('aria-label'))) || el.value || '', 100);
     let to = '';
     const href = t === 'A' ? el.getAttribute('href') : '';
     if (href && !href.startsWith('javascript') && href !== '#') {
@@ -121,6 +123,12 @@ RENDER = r"""
       return;
     }
     if (t === 'BR' || t === 'HR') { brk(); return; }
+    // an image's text alternative can carry what the page says (a code, a status icon): shown, unless decorative
+    if ((t === 'IMG' || (el.getAttribute('role') === 'img' && !clip(el.innerText, 10))) && !interactive(el)) {
+      const alt = clip(el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title') || '', 160);
+      if (alt) line += ` [image ${q(alt)}] `;
+      return;
+    }
     if (interactive(el)) {
       const control = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY', 'LABEL'].includes(t);
       if (control || clip(el.innerText, 200).length <= 100) { line += ' ' + render(el) + ' '; return; }
@@ -242,6 +250,24 @@ def short(text, limit=300) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+WHY = re.compile(r"intercepts pointer events|element is not|is not visible|not enabled|not editable|not stable|"
+                 r"outside of the viewport|detached", re.I)
+
+
+def failure(error, limit=200) -> str:
+    """A browser error with its reason kept: the call log ends in why the browser waited ("element is not editable",
+    "<div class="overlay"> intercepts pointer events"), past where a plain cut would end (run #17's ERP gate)."""
+    lines = str(error).splitlines()
+    reasons = []
+    for line in lines[1:]:
+        line = line.strip(" -\t")
+        if WHY.search(line) and line not in reasons:
+            reasons.append(line)
+    if not reasons:
+        return short(error, limit)
+    return short(f"{lines[0]} ({'; '.join(reasons[-2:])})", limit)
+
+
 # per browser context (held, so its key is never reused): the Sites driving tabs in it, and how many tabs the code
 # is opening itself right now (not popups of a page)
 _SITES: dict[object, list["Site"]] = {}
@@ -272,6 +298,15 @@ def amounts(text: str) -> list[str]:
 # script-handled submit button in a form with an empty required field was reported as not sent)
 INVALID_COUNTER = ("(b) => { const d = b.ownerDocument, w = d.defaultView; w.__agentInvalid = 0; if (!w.__agentListens) {"
                    " w.__agentListens = true; d.addEventListener('invalid', () => { w.__agentInvalid += 1; }, true); } }")
+
+
+# counts the pointer leaving a held control from now on, and notes where the control was at that moment (it shrank
+# or moved under the pointer): read in the capture phase, before the page's own handler can change it back
+HOLD_WATCH = ("(e) => { const d = e.ownerDocument; e.__agentLeft = 0; e.__agentRect = null; if (!e.__agentWatch) {"
+              " e.__agentWatch = true; for (const t of ['pointerleave', 'pointercancel']) d.addEventListener(t, (ev) => {"
+              " if (ev.target !== e) return; e.__agentLeft += 1; const r = e.getBoundingClientRect();"
+              " e.__agentRect = {x: r.x, y: r.y, w: r.width, h: r.height}; }, true); }"
+              " const r = e.getBoundingClientRect(); return {x: r.x, y: r.y}; }")
 
 
 class Site:
@@ -589,7 +624,7 @@ class Site:
             try:  # covered by an overlay or off screen: a DOM click still reaches the element's handler
                 await element.evaluate("(e) => e.click()", timeout=3000)
             except Exception:
-                return f"Could not click [{ref}]: {short(error)}\n\n" + await self.view()
+                return f"Could not click [{ref}]: {failure(error, 300)}\n\n" + await self.view()
         await self._settle()
         if blocked:
             try:
@@ -655,7 +690,7 @@ class Site:
                         if problem:
                             problems.append(f"[{ref}] {problem}")
             except Exception as error:
-                problems.append(f"[{ref}]: {short(error, 200)}")
+                problems.append(f"[{ref}]: {failure(error)}")
         await self._settle()
         report = "Filled." if not problems else "Problems: " + "; ".join(problems)
         return report + "\n\n" + await self.view()
@@ -761,10 +796,28 @@ class Site:
         box = await element.bounding_box()
         if not box:
             return "The element is not on screen.\n\n" + await self.view()
-        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        await page.mouse.down()
-        await asyncio.sleep(max(0.5, min(float(seconds), 15.0)))
-        await page.mouse.up()
+        seconds = max(0.5, min(float(seconds), 15.0))
+        point = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        for attempt in range(3):
+            origin = await element.evaluate(HOLD_WATCH, timeout=2000)
+            offset = (box["x"] - origin["x"], box["y"] - origin["y"])  # a frame's place in the page
+            await page.mouse.move(*point)
+            await page.mouse.down()
+            await asyncio.sleep(0.4)
+            # a control that relabels itself when pressed can shrink away from the pointer, and the page then ends
+            # the hold (the run #16 code failed every hold of a teammate's eval this way): let go and press again in
+            # the middle of where the control was while pressed, which lies inside it in both shapes
+            state = await element.evaluate("(e) => ({left: e.__agentLeft || 0, rect: e.__agentRect})", timeout=2000)
+            if state["left"] and state["rect"] and attempt < 2:
+                await page.mouse.up()
+                rect = state["rect"]
+                point = (rect["x"] + rect["w"] / 2 + offset[0], rect["y"] + rect["h"] / 2 + offset[1])
+                box = await element.bounding_box() or box
+                await asyncio.sleep(0.2)
+                continue
+            await asyncio.sleep(seconds - 0.4)
+            await page.mouse.up()
+            break
         await self._settle()
         return await self.view()
 

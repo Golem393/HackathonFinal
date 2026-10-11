@@ -471,6 +471,34 @@ The cheapest run so far (cost × time 237, against 333 for run #11). It was subm
   all 25 logged real inputs.
 - The platform's `atira logs` keeps only about the last 600 lines; follow a run live to keep the whole log.
 
+### Run #17 (`run_9653c867947f3421`): quality 100, 15:08, $0.513, 674 calls
+
+The review fixes held. Slower for three reasons:
+- Requirement A-5 slipped between the ERP lead and its helpers: all three helpers were busy, the lead was told to do it
+  itself and never did; the gap check handed it to a gap agent, which recorded a near-miss (325 mm stroke instead of
+  300). The solver caught it and a 200 s follow-up found the right material.
+- The tender portal finished at 1:31, was refused four times and recorded the same Q&A again in other shapes (one
+  refusal did find an answer the first pass missed, so the refusals stay).
+- The submitter asked for a TAN before requesting one; the reader returned a delivery key (`TZ-…`) from the Q&A as
+  the "TAN", which cost 1.5 minutes before the deadline.
+
+### Run #18 (`run_224cbeba74e07e49`): quality 64.9, 15:46, $0.491, 819 calls
+
+With a queue for delegated parts (when all helpers are busy) and the lead held while a part is unrecorded:
+- The queue also ran the lead's vague jobs ("continue with A-1 to A-5", "if not already …"): seven helpers. One of
+  them recorded the active material as blocked and the blocked one as active; the solver followed the newest records
+  and bid the blocked material for 01.01.
+- The submitter clicked "omit this position" one click after a step opened and lost 01.02; every finish was then told
+  "the summary differs", so it went back and forth for minutes before signing.
+
+Fixed after this run: a delegation that overlaps a part a helper works on or has recorded is refused; records that
+disagree on a material's status are listed for the solver and verified in the follow-up round; an "omit" click or
+tick on a position the bid has values for is stopped once; the summary differences are named once, after that the
+submitter is told to sign as it is; a TAN equal to an identifier the team recorded is refused, and get_tan without a
+request number first reminds the submitter to request one.
+
+Lesson: more agents cost more tokens and add chances to misread; parallelism only pays where it does not duplicate.
+
 ## 10. Watch list for the private dataset
 
 The private run uses other software, layouts, site names and data, and splits the facts differently across the
