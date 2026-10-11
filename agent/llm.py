@@ -12,6 +12,7 @@ investigation stays small and fast.
 import asyncio
 import json
 import os
+import re
 import time
 from types import SimpleNamespace
 
@@ -99,7 +100,7 @@ class _Call:
 def tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
     """A tool schema."""
     return {"type": "function", "function": {"name": name, "description": description, "parameters": {
-        "type": "object", "properties": properties, "required": required or []}}}
+        "type": "object", "properties": properties, **({"required": required} if required else {})}}}
 
 
 class Agent:
@@ -111,9 +112,10 @@ class Agent:
     def __init__(self, name: str, system: str, tools: list[tuple[dict, object]], deadline: float,
                  finish: dict | None = None, effort: str = "none", stay_until: float = 0.0, check=None,
                  refusals: int = 2, news=None, warn_at: float = 0.0, warning: str = "",
-                 hard_deadline: float = float("inf"), enough=None):
+                 hard_deadline: float = float("inf"), enough=None, max_stalls: int = 4):
         self.name, self.system, self.deadline, self.effort = name, system, deadline, effort
         self.hard_deadline = hard_deadline  # never answered after this, whatever happens (the submission waits)
+        self.max_stalls = max_stalls  # unanswered calls in a row before giving up (the submitter keeps trying)
         self.check = check  # finish() is refused while check(arguments) names a problem
         self.stay_until, self.refusals, self.max_refusals = stay_until, 0, refusals
         self.news = news  # news() -> what the rest of the team found, shown when an early finish is refused
@@ -121,7 +123,7 @@ class Agent:
         self.warn_at, self.warning = warn_at, warning  # one message at warn_at, e.g. to wrap up before the end
         self.schemas = [schema for schema, _ in tools]
         self.functions = {schema["function"]["name"]: function for schema, function in tools}
-        finish = finish or {"summary": {"type": "string", "description": "What you found or did"}}
+        finish = finish or {"summary": {"type": "string", "description": "A few words; facts go to record(), not here"}}
         self.schemas.append(tool("finish", "Call this when your task is done.", finish, list(finish)))
         self.result: dict | None = None
         self.steps = 0
@@ -163,7 +165,7 @@ class Agent:
                     continue
                 stalls += 1
                 print(f"[{self.name}] the model did not answer in time", flush=True)
-                if stalls >= 4 or time.time() > self.deadline:
+                if stalls >= self.max_stalls or time.time() > self.deadline:
                     reason = f"{stalls} stalls"
                     break
                 continue
@@ -175,6 +177,13 @@ class Agent:
             if message.content and message.content.strip():
                 print(f"[{self.name}] says: {message.content.strip()[:300]}", flush=True)
             if not calls:
+                # the finish arguments written as text instead of a call: taken as the call (one round trip less)
+                written = self._finish_in_text(message.content or "")
+                if written is not None:
+                    answer = await self._call("finish", json.dumps(written))
+                    if self.result is None:
+                        messages.append({"role": "user", "content": answer})
+                    continue
                 idle += 1
                 if idle >= 3:
                     reason = "no tool calls"
@@ -196,6 +205,19 @@ class Agent:
                     {"type": "input_image", "image_url": f"data:image/jpeg;base64,{image}"}]})
         print(f"[{self.name}] stopped: {reason} ({self.steps} steps, {self.refusals} refusals)", flush=True)
         return self.result
+
+    def _finish_in_text(self, text: str) -> dict | None:
+        """The finish arguments when a text answer is exactly one JSON object holding every one of them."""
+        body = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+        if not body.startswith("{"):
+            return None
+        try:
+            args = json.loads(body)
+        except ValueError:
+            return None
+        required = next((schema["function"]["parameters"].get("required") or [] for schema in self.schemas
+                         if schema["function"]["name"] == "finish"), [])
+        return args if isinstance(args, dict) and required and all(key in args for key in required) else None
 
     async def _call(self, name: str, arguments: str) -> str | dict:
         try:
@@ -245,15 +267,53 @@ class Agent:
 
 
 def trimmed(messages: list[dict]) -> list[dict]:
-    """The history with older tool results cut short: the model only needs the latest page views in full."""
+    """The history with older tool results cut short: the model only needs the latest page views in full. Of the two
+    kept, the older one loses the lines it shares at its start and end with the newer one (the same header,
+    navigation and footer, or the same page), and earlier finish() arguments are not repeated."""
     tool_indices = [i for i, message in enumerate(messages) if message["role"] == "tool"]
     old = set(tool_indices[:-KEEP_FULL])
     pictures = [i for i, message in enumerate(messages) if isinstance(message["content"], list)]
+    finishes = [i for i, message in enumerate(messages) if message["role"] == "assistant"
+                and any(call["function"]["name"] == "finish" for call in message.get("tool_calls") or [])]
     result = []
     for i, message in enumerate(messages):
         if i in pictures[:-1]:
             message = {**message, "content": "(an earlier screenshot, removed)"}
         elif i in old and len(message["content"]) > 600:
             message = {**message, "content": message["content"][:300] + "\n[… older output trimmed]"}
+        elif i in finishes[:-1]:
+            message = {**message, "tool_calls": [
+                {**call, "function": {**call["function"], "arguments": json.dumps({"summary": "(refused, not kept)"})}}
+                if call["function"]["name"] == "finish" else call for call in message["tool_calls"]]}
         result.append(message)
+    kept = tool_indices[-KEEP_FULL:]
+    if len(kept) == 2 and isinstance(result[kept[0]]["content"], str) and isinstance(result[kept[1]]["content"], str):
+        result[kept[0]] = {**result[kept[0]], "content": same_edges(result[kept[0]]["content"],
+                                                                    result[kept[1]]["content"])}
     return result
+
+
+def same_edges(older: str, newer: str) -> str:
+    """The older page view without the leading and trailing lines it shares with the newer one (three or more each),
+    which the prompt holds in full right after it. Nothing is cut when the newer one is a part of a long page."""
+    if len(older) <= 600 or newer.startswith("[page text from") or "more characters: more() shows them" in newer:
+        return older
+    a, b = older.split("\n"), newer.split("\n")
+    body = next((n for n, line in enumerate(a) if not line.startswith(("URL:", "Title:", "Tabs:", "Event:"))
+                 and not line.endswith(".") and n > 0 and a[n - 1] == ""), None)
+    if body is None:
+        return older
+    start = body
+    while start < len(a) and start < len(b) and a[start] == b[start]:
+        start += 1
+    end = 0
+    while end < len(a) - start and end < len(b) and a[-1 - end] == b[-1 - end]:
+        end += 1
+    if start - body < 3 and end < 3:
+        return older
+    head = a[:body] + ([f"[… {start - body} lines as in the next result]"] if start - body >= 3 else a[body:start])
+    middle = a[start:len(a) - end] if end else a[start:]
+    tail = [f"[… {end} lines as in the next result]"] if end >= 3 else (a[len(a) - end:] if end else [])
+    if not middle and start - body >= 3:
+        return "\n".join(a[:body] + ["[same page as the next result]"])
+    return "\n".join(head + middle + tail)

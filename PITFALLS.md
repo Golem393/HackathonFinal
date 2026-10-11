@@ -420,6 +420,57 @@ Still seen in run #11, worth fixing later (none cost points):
   keystrokes when a fill does not stick is written but not in the 100-point version
   (`out/pending-keystroke-fallback.txt`).
 
+### Run #12 (`run_947c0bdd59c7c62b`): every agent on the hosted Qwen 3.8 Flash Next, quality 0
+
+The same code as run #11, with every model call on Qwen (the patch is in `out/qwen-experiment.patch`, branch `qwen`):
+- Mail was perfect again (9 of 9), but took until minute 7:37 instead of about 3.
+- The ERP never completed a material: one helper spent five minutes on an unused requirement after mapping it to a
+  position that does not exist.
+- 13 calls stalled past 30 s.
+- The first gap check and the final solver (one long answer over the whole ledger) never answered, so the run fell
+  back to the empty bid. The TAN came too late, and nothing was signed.
+- Cost $0.45 for 383 calls, against $0.49 for 710 calls with GPT-6.
+
+Lesson: with our current prompt and view sizes Qwen is slower per call, much slower on long answers, and not
+cheaper. Smaller calls first (the token audit); then Qwen may be worth a second try, for the browsing steps only.
+
+### Runs #13–#15: the generalization batch, all three at quality 100
+
+| Run | Code | Time | Cost | Calls | Input tokens |
+|---|---|---|---|---|---|
+| #11 `run_644527a83fe7f01d` | first 100 (baseline) | 11:23 | $0.488 | 710 | 3.45M |
+| #13 `run_806cef94890b9968` | generalization batch | 12:35 | $0.547 | 634 | 3.44M |
+| #14 `run_4d2c4328eab0e6e1` | + safe cuts | 10:40 | $0.534 | 603 | 3.64M |
+| #15 `run_f09397d28eb17b0c` | + ERP-lead loop changes | 14:00 | $0.562 | 626 | 3.96M |
+
+- Run #13: the model used `drag(to=…)` with the slider itself as the target, which moves nothing, and spent about
+  three minutes on one access check. `to` is now used only for a different element and only without `dx`.
+- Run #14: fewer calls but a higher cost than run #11. The generalization text made every call longer, and the safe
+  cuts mostly removed cached tokens, which are cheap. The token audit says about half the input is a cached static
+  prefix that is needed; the real lever is fewer calls, not shorter prompts.
+- Run #15: the specification agent crashed on a password field's keypress that timed out after 30 s, and the crash
+  showed only at the end. Fixes: timeouts and try/except in the login, a 60 s limit on opening a site with a
+  fresh-tab fallback, and crash logging as soon as a task fails. The ERP lead also stayed long after its facts were
+  in; it is now released once the gap check hands its remaining gaps to other agents.
+- Leaderboard: among the teams at 100 the rank goes by cost × time. Run #11 is still the submitted one.
+
+### Run #16 (`run_840d332b75e42ec3`): quality 100, 10:39, $0.371, 549 calls, 2.58M input tokens
+
+The cheapest run so far (cost × time 237, against 333 for run #11). It was submitted from the website as
+`sub_e66ee1b64e409aff`, so it is the version the final run uses until a newer submission passes review.
+- The new keystroke fallback in `fill()` told the truth where the old code said "Filled.": in fresh tabs a popup
+  covered the search field, and once the TAN field. Its message was a raw click timeout; it now says that something
+  covers the field.
+- A false "the value may span several fields" came back when a field already held the value (a repeated search).
+- A review of everything since run #14 (four lenses, a skeptic per finding) confirmed 28 defects in this code:
+  - two serious: the TAN memo sent a second TAN reader away from the right message; the no-bid cleanup read "gesperrt"
+    in a status legend as a blocked material;
+  - the rest small, mostly private-only formats: a number annotated "German format" read 100× too large, a day unit
+    applied to a week number, a fixing equation split at the wrong "=", same-day future records.
+  All are fixed for run #17 (`out/snapshots/run17-review-fixes`); the calculation gives the same answer as before on
+  all 25 logged real inputs.
+- The platform's `atira logs` keeps only about the last 600 lines; follow a run live to keep the whole log.
+
 ## 10. Watch list for the private dataset
 
 The private run uses other software, layouts, site names and data, and splits the facts differently across the

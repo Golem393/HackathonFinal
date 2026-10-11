@@ -89,6 +89,34 @@ class Counts(unittest.TestCase):
             {"qa_number": "1", "date": "2030-01-01", "quantity": ""}]}), 20)
         self.assertEqual(calc.dec("1.234.567"), 1234567)
 
+    def test_dates_in_other_shapes(self):
+        for text in ("Mo, 24.01.2030 17:00", "24. Januar 2030", "Jan 24, 2030", "2030/01/24", "24.01.30",
+                     "Sent: 24 January 2030"):
+            self.assertEqual(calc.day(text), "2030-01-24", text)
+        self.assertIsNone(calc.day("Position 07.02"))
+
+    def test_a_quantity_change_after_the_scenario_date_has_not_happened(self):
+        position = {"tender_quantity": 10, "quantity_changes": [{"qa_number": "1", "date": "2030-01-20", "quantity": 14},
+                                                                {"qa_number": "2", "date": "2030-01-26", "quantity": 18}]}
+        self.assertEqual(calc.final_quantity(position, "2030-01-25"), 14)
+        self.assertEqual(calc.final_quantity(position), 18)  # without a scenario date as before
+        same_day = {"tender_quantity": 10, "quantity_changes": [
+            {"qa_number": "1", "date": "2030-01-25T08:00:00Z", "quantity": 15},
+            {"qa_number": "2", "date": "2030-01-25T10:00:00Z", "quantity": 20}]}  # an hour after the scenario time
+        self.assertEqual(calc.final_quantity(same_day, "2030-01-25", "2030-01-25T09:00:00Z"), 15)
+        local = {"tender_quantity": 10, "quantity_changes": [{"qa_number": "1", "date": "25.01.2030", "quantity": 20}]}
+        self.assertEqual(calc.final_quantity(local, "2030-01-25", "2030-01-25T09:00:00Z"), 20)  # no zone: by day
+
+    def test_a_unit_or_format_note_belongs_to_its_own_number(self):
+        self.assertEqual([calc.weeks_of(v) for v in ("2 Wochen (14 Tage)", "2 Wochen (10 Arbeitstage)", "14 Tage",
+                                                     "1 Woche = 5 AT", "QX-12: 14 Tage")], [2, 2, 2, 1, 2])
+        self.assertEqual(calc.dec("4321.09 (converted from the German format)"), Decimal("4321.09"))
+        self.assertEqual(calc.dec("4321.09 (de-DE)"), Decimal("4321.09"))
+        self.assertEqual(calc.dec("142.736 (de-DE)"), 142736)  # three digits after the dot: grouping, as stated
+        for note in ("1.2345 (1 XYZ = 1.2345 EUR)", "1.2345 (FX-77: 1 XYZ = 1,2345 EUR)",
+                     "1 XYZ = 1,2345 EUR; 1 EUR = 0,8100 XYZ"):
+            self.assertEqual(calc.eur_per_unit({"eur_per_currency_unit": note}, "XYZ"), Decimal("1.2345"), note)
+
     def test_times_with_offsets_are_compared_in_utc(self):
         self.assertLess(calc.stamp("2030-05-04T23:30:00+02:00"), calc.stamp("2030-05-04T22:00:00Z"))
         self.assertEqual(calc.stamp("04.05.2030, 10:30"), "2030-05-04 10:30")

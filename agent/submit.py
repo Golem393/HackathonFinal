@@ -51,13 +51,21 @@ NOT_TOTAL = re.compile(r"brutto|gross|mwst|ust|vat|steuer|tax|rabatt|discount|na
 
 
 def _id_pattern(position: str) -> re.Pattern:
-    """A position id by its digit groups, standing alone: 1.3 matches 01.03; the date 01.03.2027, a price and the
-    digits of an article number do not."""
-    groups = re.findall(r"\d+", str(position))
+    """A position id by its digit groups, standing alone: 7.4 matches 07.04; the date 07.04.2027, a price and the
+    digits of an article number do not. A letter prefix ("A-2") must be there too; a bare number ("10") counts only
+    after a position label ("Pos.", "OZ", "Nr.") or as the first cell of a table row, never in "Schritt 4 von 9"."""
+    position = str(position).strip()
+    groups = re.findall(r"\d+", position)
     if not groups:
-        return re.compile(re.escape(str(position)))
+        return re.compile(rf"(?<![\w-]){re.escape(position)}(?![\w-])")
+    prefix = re.match(r"^\D*", position).group(0)
     body = r"[.\s/-]".join(rf"0*{int(group)}" for group in groups)
-    return re.compile(rf"(?<![\w.,-]){body}(?![\d]|[.,]\d)")
+    end = r"(?![\d]|[.,]\d|\s*(?:von|of|/)\s*\d)"
+    if prefix:
+        return re.compile(rf"(?<![\w.,-]){re.escape(prefix)}{body}{end}")
+    if len(groups) == 1:
+        return re.compile(rf"(?:\b(?:Pos(?:ition)?|OZ|Nr)\.?\s*|^\|\s*){body}{end}", re.I | re.M)
+    return re.compile(rf"(?<![\w.,-]){body}{end}")
 
 
 class FormGuard:
@@ -71,8 +79,7 @@ class FormGuard:
         self.omitted = {str(position) for position in omitted}
         self.patterns = {position: _id_pattern(position) for position in list(self.rows) + list(self.omitted)}
         self.refused: set[tuple] = set()
-        # a plain number as position id ("3") cannot be told apart from quantities on a page: no checks then
-        self.usable = bool(self.rows) and all(len(re.findall(r"\d+", p)) >= 2 for p in self.patterns)
+        self.usable = bool(self.rows)
 
     def _values(self, row: dict) -> dict[str, str]:
         values = {"quantity": str(row["quantity"]), "unit price": german(row["unit_price"] or 0),
@@ -217,8 +224,11 @@ def _code(text: str) -> str:
     return re.sub(r"[^0-9a-z]", "", str(text).lower())
 
 
+LOOKED: dict[tuple, list[str]] = {}  # per TAN website and request: pages where an earlier attempt ended without a TAN
+
+
 async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, reference: str = "",
-                    request: str = "") -> str:
+                    request: str = "", brief: str = "", asks: str = "") -> str:
     """The TAN from the mailbox: the message for `request` (the number the submission website gave the request),
     else the newest TAN message. It starts in a fresh tab: the page the mail investigator left can be stuck."""
     reader = mail
@@ -226,7 +236,10 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
         reader = await asyncio.wait_for(mail.spawn(), 30)
         first_view = await asyncio.wait_for(reader.goto(reader.url), 45)
         if "password-input" in first_view:
-            first_view = await reader.login()
+            try:
+                first_view = await reader.login()
+            except Exception:
+                first_view = await reader.view()
     except Exception as error:
         print(f"[tan] a new mailbox tab failed ({type(error).__name__}); using the open one", flush=True)
         reader = mail
@@ -236,8 +249,10 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
         """A TAN is a code of its own: not empty, not a word like "unknown", not the tender reference or the request
         number (it need not have digits: some are letters only)."""
         tan = _code(args.get("tan", ""))
+        index = re.findall(r"\d+", asks or "")
         if len(tan) < 4 or tan in ("unknown", "none", "notfound", "unbekannt", "keine") \
-                or (reference and tan in _code(reference)) or (request and tan == _code(request)):
+                or (reference and tan in _code(reference)) or (request and tan == _code(request)) \
+                or (index and tan in index):
             return ("That is not a TAN: copy the code itself from the message text (it is neither the tender "
                     "reference nor the request number in the subject). Open the message, unlock it, open its "
                     "original text, or call screenshot() to see it.")
@@ -245,10 +260,15 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
 
     agent = Agent("tan", prompts.BROWSER, web.toolbox(reader), deadline, check=real_tan,
                   finish={"tan": {"type": "string", "description": "The TAN exactly as written in the message"}})
-    result = await agent.run(prompts.tan(time.strftime("%H:%M:%S", time.gmtime(requested_at)), request, first_view),
-                             max_steps=25)
+    brief_lines = "\n".join(line.strip() for line in brief.splitlines() if re.search(r"\bTAN\b", line))[:1500]
+    memo = (id(mail), _code(request))  # a new request starts clean (run #16 review)
+    looked = tuple(LOOKED.get(memo, [])[-3:])
+    result = await agent.run(prompts.tan(time.strftime("%H:%M:%S", time.gmtime(requested_at)), request, first_view,
+                                         brief_lines, asks, looked), max_steps=25)
     tan = (result or {}).get("tan", "")
     if await real_tan({"tan": tan}):  # for the run's log: what the mailbox showed instead
+        if reader.page.url.rstrip("/") != reader.url.rstrip("/"):  # the start page tells the next reader nothing
+            LOOKED.setdefault(memo, []).append(web.short(reader.page.url, 120))
         print(f"[tan] no TAN found; the mailbox page was:\n{reader.full_view[:4000]}", flush=True)
         return ""
     return tan
@@ -259,7 +279,7 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
     guard = FormGuard(answer, omitted)
     told: set[tuple] = set()
 
-    async def get_tan(request: str = "") -> str:
+    async def get_tan(request: str = "", asks: str = "") -> str:
         if mail is None:
             return "No mailbox website is known; look for the TAN where the brief says it arrives."
         problems = tuple(guard.summary_problems(site.full_view))
@@ -268,9 +288,19 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
             print(f"[submit] summary check: {'; '.join(problems)}", flush=True)
             return ("Do not use a TAN yet: the summary differs from the bid: " + "; ".join(problems) + ". Correct "
                     "these first (then request a new TAN). If the summary is right after all, call get_tan again.")
-        tan = await fetch_tan(mail, time.time(), time.time() + 120, answer.get("tender_reference", ""), request)
+        async def keep_form_alive():  # the form waits while the TAN is read: a sign of life, no request
+            while True:
+                await asyncio.sleep(15)
+                await site.nudge()
+        alive = asyncio.create_task(keep_form_alive())
+        try:
+            tan = await fetch_tan(mail, time.time(), time.time() + 120, answer.get("tender_reference", ""), request,
+                                  task.get("brief", ""), asks)
+        finally:
+            alive.cancel()
         if tan:
             site.secrets.add(tan)  # a TAN field may be a password field
+            site.last_secret = tan
         return f"The TAN is {tan}" if tan else "No TAN message was found yet; call get_tan() again in a moment."
 
     async def check_summary() -> str:
@@ -291,13 +321,13 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
     browsing = [(schema, click if schema["function"]["name"] == "click" else function)
                 for schema, function in web.toolbox(site)]
     tools = browsing + web.configure_tool(site) + [(tool(
-        "check_summary", "Compare the summary page with the bid (materials, unit prices, total) before you request "
-                         "the TAN.", {}), check_summary), (tool(
-        "get_tan", "Read the signing TAN from the mailbox. Call it right after you requested the TAN on this website, "
-                   "with the request number or identifier the website showed for your request, so that the TAN of "
-                   "exactly this request is used.",
-        {"request": {"type": "string", "description": "The number the website gave your TAN request, copied from "
-                                                      "the page (empty if it showed none)"}}), get_tan)]
+        "check_summary", "Compare the summary page with the bid.", {}), check_summary), (tool(
+        "get_tan", "Read the signing TAN of your request.",
+        {"request": {"type": "string", "description": "The request number or identifier the website showed for your "
+                                                      "TAN request, copied exactly (empty if it showed none)"},
+         "asks": {"type": "string", "description": "The page's sentence saying which TAN it wants, if it says so "
+                                                   "(e.g. a TAN number from a list), copied exactly"}}),
+        get_tan)]
     # no way to give up: in runs #8 and #9 the model reached for "failed" whenever a step looked hard, and the
     # advice it got then (omit what is open) cost run #9 a whole position and four checks
     finish = {"receipt": {"type": "string", "description": "The website's confirmation that the bid was submitted, "
@@ -333,6 +363,7 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
                "entered yet (with the form's option to omit a position), then go straight on: declarations, "
                "request the TAN, get_tan(request=...), enter it and confirm the bid. A signed partial bid scores; "
                "an unsigned one scores nothing.")
+    # an unsigned bid scores nothing: a model outage of a few minutes is waited out until the deadline
     agent = Agent("submit", prompts.BROWSER, tools, deadline, finish=finish, check=confirmed, effort="low",
-                  warn_at=deadline - 180, warning=wrap_up)
+                  warn_at=deadline - 180, warning=wrap_up, max_stalls=1000)
     return await agent.run(prompts.submit(task["brief"], table(answer, omitted, configurator), first_view), max_steps=400)

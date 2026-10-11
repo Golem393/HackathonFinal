@@ -66,6 +66,16 @@ class Checklist(unittest.TestCase):
                          reference_as_written="AB-2030-11", date="08.03.2030", sender="geld@firma.example")
         self.assertIn("writes the reference as AB-2030-12,", self.close(**arguments) + ",")
 
+    def test_the_right_name_at_another_domain_is_questioned_once(self):
+        for n in range(2):
+            self.ledger.add("post", f"/m/{n}", "mail", {"sender": "chef@firma.example", "subject": f"Notiz {n}"})
+        self.ledger.add("post", "/m/9", "mail", {"subject": "Staffelrabatt AB-2030-11", "date": "2030-03-01",
+                                                 "sender": "chef@firma-example.net"})
+        arguments = dict(topic="Staffelrabatt", outcome="recorded", subject="Staffelrabatt AB-2030-11",
+                         reference_as_written="AB-2030-11", date="2030-03-01", sender="Chef <chef@firma-example.net>")
+        self.assertIn("not at the bidder's mailbox domain firma.example", self.close(**arguments))
+        self.assertIn("Closed", self.close(**arguments))
+
     def test_another_sender_is_questioned_once(self):
         self.ledger.add("post", "/m/3", "mail", {"subject": "Staffelrabatt AB-2030-11"})
         arguments = dict(topic="Staffelrabatt", outcome="recorded", subject="Staffelrabatt AB-2030-11",
@@ -211,13 +221,52 @@ class UnusedRequirement(unittest.TestCase):
     def test_a_requirement_no_position_uses_is_not_delegated(self):
         async def check():
             ledger = team.Ledger()
-            ledger.add("portal", "/lv", "positions", [{"position": "1", "requirement": "R-2"}])
+            ledger.add("portal", "/lv", "positions", [{"tender": "AB-77", "position": "1", "requirement": "R-2"}])
             ledger.add("spec", "/r", "requirement", [{"id": "R-2", "group": "KG-17"}, {"id": "R-3", "group": "KG-33"}])
-            plan = {"sites": [{"site_id": "portal", "kind": "tender"}, {"site_id": "spec", "kind": "specification"}]}
+            plan = {"tender_reference": "AB-77",
+                    "sites": [{"site_id": "portal", "kind": "tender"}, {"site_id": "spec", "kind": "specification"}]}
             lead = SimpleNamespace(id="werk", page=SimpleNamespace(url="https://werk.example/"))
             [(_, delegate)] = team.helper_tools(lead, {}, plan, ledger, time.time() + 300, [])
-            return await delegate("requirement R-3, group KG-33")
+            return await delegate("tender AB-77: requirement R-3, group KG-33")  # the reference proves nothing
         self.assertIn("No position of the tender refers", asyncio.run(check()))
+
+
+class HandedGaps(unittest.TestCase):
+    def test_a_lead_is_let_go_once_its_open_gaps_have_their_own_agents(self):
+        async def check():
+            ledger = team.Ledger()
+            ledger.add("werk", "/m", "material", {"price": "1234.56"}, agent="werk")
+            ledger.latest_inputs = {"missing": [{"fact": "price of QX-2", "site_id": "werk"}]}
+            enough = team.enough_refusing(ledger, "werk")
+            self.assertFalse(enough())  # nobody has the gap: keep working
+            job = asyncio.get_running_loop().create_future()  # a follow-up still working on it
+            ledger.handed["werk"] = [("price of QX-2", job, "werk+g1")]
+            results = [enough(), enough(), enough()]
+            self.assertTrue(results[-1])  # idle twice with the gap in other hands
+            job.set_result(None)  # the follow-up ended without recording anything: the gap is back
+            self.assertFalse(team.enough_refusing(ledger, "werk")())
+            ledger.add("werk", "/m2", "material", {"price of QX-2": "88.00"}, agent="werk+g1")
+            fresh = team.enough_refusing(ledger, "werk")
+            self.assertTrue([fresh(), fresh(), fresh()][-1])
+        asyncio.run(check())
+
+
+class HungStart(unittest.TestCase):
+    def test_a_start_that_hangs_moves_to_a_fresh_tab(self):
+        class Stuck:
+            id, url = "spec", "https://spec.example/"
+
+            async def goto(self, url):
+                await asyncio.sleep(60)
+
+            async def fresh_tab(self, url=None):
+                return "Fresh start page"
+
+        team.ENTER_SECONDS, saved = 0.2, team.ENTER_SECONDS
+        try:
+            self.assertEqual(asyncio.run(team.enter(Stuck())), "Fresh start page")
+        finally:
+            team.ENTER_SECONDS = saved
 
 
 class Groups(unittest.TestCase):
@@ -228,6 +277,24 @@ class Groups(unittest.TestCase):
         self.assertEqual(sorted(t["topic"] for group in groups for t in group), [str(n) for n in range(9)])
         self.assertEqual(len(team.topic_groups(topics[:3])), 1)
         self.assertEqual(team.topic_groups([]), [])
+
+
+class BlockedStatus(unittest.TestCase):
+    def test_only_the_materials_own_status_counts(self):
+        for active in ("01 (status key: 01 freigegeben · 03 gesperrt)", "01 freigegeben (active); QX-77 03 gesperrt",
+                       "01 active; 03 blocked", "nicht gesperrt", "aktiv", ""):
+            self.assertFalse(team.blocked(active), active)
+        for dead in ("03 gesperrt", "gesperrt (03)", "inactive", "nicht freigegeben", "blocked; see legend"):
+            self.assertTrue(team.blocked(dead), dead)
+
+    def test_a_confused_no_bid_naming_active_materials_becomes_a_bid(self):
+        ledger = team.Ledger()
+        inputs = {"decision": "no_bid", "positions": [
+            {"position": "1", "requirement": {"id": "R-1", "catalogue_group": "GR-1"}, "material_number": "QX-11",
+             "material_attributes": {"status": "01 freigegeben (status key: 01 freigegeben · 03 gesperrt)"}}]}
+        team.normalize_no_bid(inputs, ledger)
+        self.assertEqual(inputs["positions"][0]["material_number"], "QX-11")
+        self.assertFalse(team.no_bid_shown(inputs))
 
 
 if __name__ == "__main__":

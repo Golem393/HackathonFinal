@@ -92,6 +92,12 @@ class Configurator(unittest.TestCase):
         self.assertIsNone(web.choose_option(options, "999"))
         self.assertIsNone(web.choose_option(options, "Y-7"))
         # "none" in the table's words picks the one option that says none in the form's words
+        sizes = [{"text": "Choose", "value": ""}, {"text": "1.200 mm", "value": "a"}, {"text": "1.250 mm", "value": "b"}]
+        self.assertEqual(web.choose_option(sizes, "1250")["value"], "b")  # thousands groups read as such
+        self.assertEqual(web.choose_option(sizes, "1250 mm")["value"], "b")
+        self.assertEqual(web.choose_option([{"text": "200 mm", "value": "x"}, {"text": "1250 mm", "value": "y"}],
+                                           "1.250 mm")["value"], "y")
+        self.assertIsNone(web.choose_option([{"text": "5000 mm", "value": "x"}], "40"))  # not a next size
         coats = [{"text": "Choose", "value": ""}, {"text": "Zinc", "value": "z"},
                  {"text": "Ohne Beschichtung", "value": "o"}]
         self.assertEqual(web.choose_option(coats, "Keine")["value"], "o")
@@ -124,6 +130,8 @@ class Configurator(unittest.TestCase):
                                                {"field": "Pressure", "value": "250"},
                                                {"field": "Length (mm)", "value": "300"}], apply="Apply choice")
                 self.assertIn("no field 'Pressure': skipped", report)
+                report = await site.configure([{"field": "Colour", "value": "red"}], apply="Apply choice")
+                self.assertTrue(report.startswith("Nothing was chosen"), report[:200])
                 self.assertEqual(await page.locator("[name=length]").input_value(), "300")
                 # a value that is not offered stops the chain and says what is offered
                 await page.set_content(CONFIGURATOR)
@@ -181,6 +189,250 @@ class Typing(unittest.TestCase):
                 # an address on a host the page does not link to is not opened
                 answer = await site.goto("https://made-up-host.invalid/start")
                 self.assertIn("is not this website", answer)
+            finally:
+                await browser.close()
+
+
+class NumberFields(unittest.TestCase):
+    def test_german_amounts_go_into_number_fields_as_plain_numbers(self):
+        self.assertEqual(web.plain_number("512,46"), "512.46")
+        self.assertEqual(web.plain_number("4.321,09"), "4321.09")
+        self.assertEqual(web.plain_number("25"), "25")
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><label>Preis <input type="number" name="p" step="0.01"></label>'
+                                       '<label>Text <input name="t"></label></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                view = await site.view()
+                price = int(re.search(r'\[(\d+) number-input "Preis', view).group(1))
+                text = int(re.search(r'\[(\d+) input "Text', view).group(1))
+                report = await site.fill([{"ref": price, "value": "4.321,09"}, {"ref": text, "value": "4.321,09"}])
+                self.assertTrue(report.startswith("Filled."), report[:200])
+                self.assertEqual(await page.locator("[name=p]").input_value(), "4321.09")
+                self.assertEqual(await page.locator("[name=t]").input_value(), "4.321,09")  # text stays as given
+            finally:
+                await browser.close()
+
+
+class RequiredFields(unittest.TestCase):
+    def test_a_blocked_send_names_the_required_fields(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><form onsubmit="document.body.dataset.sent = 1; return false">'
+                                       '<label><input type="checkbox" name="d" required> Eigenerklärung</label>'
+                                       '<button>Weiter</button><button formnovalidate name="skip">Auslassen</button>'
+                                       '</form></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                view = await site.view()
+                self.assertRegex(view, r'checkbox "Eigenerklärung" required')
+                go = int(re.search(r'\[(\d+) button "Weiter"', view).group(1))
+                answer = await site.click(go)
+                self.assertIn("The form was not sent", answer)
+                self.assertIn("Eigenerklärung", answer)
+                skip = int(re.search(r'\[(\d+) button "Auslassen"', await site.view()).group(1))
+                self.assertNotIn("The form was not sent", await site.click(skip))  # no check for this button
+                # a page script handles this button itself, so the empty required field blocks nothing
+                await page.set_content('<main><form><label>Code <input name="c" required></label>'
+                                       '<button onclick="event.preventDefault(); document.body.dataset.asked = 1">'
+                                       'Code anfordern</button></form></main>')
+                ask = int(re.search(r'\[(\d+) button "Code anfordern"', await site.view()).group(1))
+                self.assertNotIn("The form was not sent", await site.click(ask))
+                self.assertEqual(await page.evaluate("document.body.dataset.asked"), "1")
+                gone = int(re.search(r'\[(\d+) button "Code anfordern"', await site.view()).group(1))
+                await page.set_content("<main><p>Neu geladen</p></main>")
+                self.assertIn("no longer on the page", await site.click(gone))
+            finally:
+                await browser.close()
+
+
+class ScrollTerms(unittest.TestCase):
+    def test_scrolling_the_terms_unlocks_their_checkbox(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><div id="t" style="height:60px;overflow:auto">' + "Bedingung. " * 300 +
+                                       '</div><label><input type="checkbox" id="c" disabled> gelesen</label><script>'
+                                       'const t = document.getElementById("t"); t.addEventListener("scroll", () => {'
+                                       ' if (t.scrollTop + t.clientHeight >= t.scrollHeight - 2)'
+                                       ' document.getElementById("c").disabled = false; });</script></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                self.assertRegex(await site.view(), r'checkbox "gelesen" disabled')
+                self.assertNotRegex(await site.scroll(), r'checkbox "gelesen" disabled')
+            finally:
+                await browser.close()
+
+
+class KeystrokesOnly(unittest.TestCase):
+    def test_a_field_that_drops_script_values_gets_real_keystrokes(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><label>Menge <input name="q"></label>'
+                                       '<label>TAN <input name="t" maxlength="4"></label><script>'
+                                       'let keys = false; const q = document.querySelector("[name=q]");'
+                                       'q.addEventListener("keydown", () => { keys = true; });'
+                                       'q.addEventListener("input", () => { if (!keys) setTimeout(() => { q.value = ""; }, 30); });'
+                                       '</script></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                view = await site.view()
+                ref = int(re.search(r'\[(\d+) input "Menge', view).group(1))
+                report = await site.fill([{"ref": ref, "value": "130"}])
+                self.assertTrue(report.startswith("Filled."), report[:200])
+                self.assertEqual(await page.locator("[name=q]").input_value(), "130")
+                report = await site.fill([{"ref": ref, "value": "130"}])  # the same value again: still kept
+                self.assertTrue(report.startswith("Filled."), report[:200])
+                tan = int(re.search(r'\[(\d+) input "TAN', view).group(1))
+                report = await site.fill([{"ref": tan, "value": "7F3A99"}])  # longer than the field: reported
+                self.assertIn("several fields", report)
+            finally:
+                await browser.close()
+
+
+class TwoStepLogin(unittest.TestCase):
+    def test_user_name_first_then_the_password(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><form id="f" onsubmit="return false"><label>Benutzer <input '
+                                       'name="username" autocomplete="username"></label></form><script>'
+                                       'document.getElementById("f").addEventListener("submit", () => {'
+                                       ' document.querySelector("main").innerHTML = \'<label>Kennwort <input '
+                                       'type="password" id="p" onkeydown="if (event.key === \\\'Enter\\\') '
+                                       'document.body.dataset.done = this.value"></label>\'; });</script></main>')
+                access = {"siteId": "test", "url": "about:blank", "credentials": {"username": "u1", "password": "pw-123456"}}
+                site = web.Site(access, context, page, log=lambda *_: None)
+                answer = await site.login()
+                self.assertIn("two steps", answer)
+                self.assertEqual(await page.evaluate("document.body.dataset.done"), "pw-123456")
+            finally:
+                await browser.close()
+
+
+class Prompts(unittest.TestCase):
+    def test_a_prompt_gets_the_tan_or_the_quoted_word(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><button onclick="document.body.dataset.a = prompt(\'Bitte TAN eingeben\')">'
+                                       'TAN</button><button onclick="document.body.dataset.b = prompt(\'Zur Bestätigung '
+                                       '„VERBINDLICH“ eingeben\')">Senden</button></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                self.assertIsNone(site._prompt_answer("TAN für „Anforderung 3“ eingeben", ""))  # no TAN read yet
+                self.assertEqual(site._prompt_answer("Code „JA“ eingeben", ""), "JA")
+                site.secrets.update({"OLD4TAN9", "7F3A99"})  # as get_tan keeps them: an older one has expired
+                site.last_secret = "7F3A99"
+                view = await site.view()
+                await site.click(int(re.search(r'\[(\d+) button "TAN"', view).group(1)))
+                self.assertEqual(await page.evaluate("document.body.dataset.a"), "7F3A99")
+                view = await site.view()
+                await site.click(int(re.search(r'\[(\d+) button "Senden"', view).group(1)))
+                self.assertEqual(await page.evaluate("document.body.dataset.b"), "VERBINDLICH")
+            finally:
+                await browser.close()
+
+
+class Hold(unittest.TestCase):
+    def test_a_hold_to_confirm_control_unlocks(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content('<main><button id="h" type="button">Gedrückt halten</button><p id="s">gesperrt</p>'
+                                       '<script>let t; const b = document.getElementById("h");'
+                                       'b.addEventListener("mousedown", () => { t = Date.now(); });'
+                                       'b.addEventListener("mouseup", () => { if (Date.now() - t > 1500) '
+                                       'document.getElementById("s").textContent = "entsperrt"; });</script></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                view = await site.view()
+                ref = int(re.search(r'\[(\d+) button "Gedrückt halten"', view).group(1))
+                self.assertIn("entsperrt", await site.hold(ref, 2))
+                await page.set_content('<main><input id="i"><p id="k">-</p><script>document.getElementById("i")'
+                                       '.addEventListener("keydown", (e) => { document.getElementById("k").textContent'
+                                       ' = e.key; });</script></main>')
+                view = await site.view()
+                field = int(re.search(r'\[(\d+) input', view).group(1))
+                self.assertIn("Tab", await site.press("TAB", field))  # a key name in another case still works
+            finally:
+                await browser.close()
+
+
+class DragOnto(unittest.TestCase):
+    def test_a_piece_is_dragged_onto_its_slot(self):
+        asyncio.run(self.check())
+
+    async def check(self):
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await page.set_content(
+                    '<main><div id="piece" style="position:absolute;left:20px;top:80px;width:40px;height:40px;'
+                    'background:#c33;cursor:pointer" tabindex="0">Teil</div>'
+                    '<div id="slot" style="position:absolute;left:300px;top:80px;width:60px;height:60px;'
+                    'border:1px solid #333" tabindex="0">Ziel</div><p id="s" style="margin-top:160px">offen</p>'
+                    '<script>const p = document.getElementById("piece"); let down = false;'
+                    'p.addEventListener("mousedown", () => { down = true; });'
+                    'document.addEventListener("mouseup", (e) => { if (!down) return; down = false;'
+                    'const r = document.getElementById("slot").getBoundingClientRect();'
+                    'if (e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom)'
+                    ' document.getElementById("s").textContent = "gelöst"; });</script></main>')
+                site = web.Site({"siteId": "test", "url": "about:blank"}, context, page, log=lambda *_: None)
+                view = await site.view()
+                piece = int(re.search(r'\[(\d+) \w+ "Teil"', view).group(1))
+                slot = int(re.search(r'\[(\d+) \w+ "Ziel"', view).group(1))
+                self.assertIn("gelöst", await site.drag(piece, to=slot))
+                # a slider dragged with to= itself (run #13) still moves all the way
+                await page.set_content('<main><label>Freigabe <input type="range" name="r" min="0" max="100" '
+                                       'value="0"></label></main>')
+                view = await site.view()
+                slider = int(re.search(r'\[(\d+) range-input', view).group(1))
+                # the slider path ran (it reports the slider's value), not a drop onto itself
+                self.assertIn("The slider is now at", await site.drag(slider, to=slider))
             finally:
                 await browser.close()
 

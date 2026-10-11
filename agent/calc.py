@@ -15,11 +15,33 @@ CENT = Decimal("0.01")
 ZERO = Decimal("0")
 
 
+DOT_LOCALES = {"en", "ja", "zh", "ko", "he", "th"}
+DOT_REGIONS = {"de-ch", "de-li", "it-ch", "es-mx"}
+TAG = re.compile(r"\b([a-z]{2})[-_]([a-z]{2})\b", re.I)
+IDENTIFIER = re.compile(r"\b[A-Za-z]+[-_]?\d[\w-]*")  # e.g. IDX-7001, QX-11: names, not numbers
+NUMBER = re.compile(r"-?\d{1,3}(?:[ \u00a0\u202f']\d{3})+(?:[.,]\d+)?|-?\d[\d.,]*")
+
+
+def decimal_mark(raw: str) -> str | None:
+    """The decimal mark a text states: by a locale tag ("(en-US)", "de-at", any case) or a word ("Dezimalkomma",
+    "decimal point"); None when it states none."""
+    if re.search(r"dezimalpunkt|decimal point|englisch|english", raw, re.I):
+        return "."
+    if re.search(r"dezimalkomma|decimal comma|deutsch|german", raw, re.I):
+        return ","
+    tag = TAG.search(raw)
+    if tag:
+        language, region = tag.group(1).lower(), f"{tag.group(1)}-{tag.group(2)}".lower()
+        return "." if language in DOT_LOCALES or region in DOT_REGIONS else ","
+    return None
+
+
 def dec(value) -> Decimal | None:
     """A Decimal from a number or a string; German "1.234,56" and plain "1234.56" both work. None stays None.
 
-    A locale tag next to the number decides its format: "238,098 (en-US)" is 238098 and "181.429 (de-DE)" is 181429,
-    where the bare digits would be read as decimals."""
+    A locale tag or a word next to the number decides its format: "317,205 (en-US)" is 317205 and "142.736 (de-DE)"
+    is 142736, where the bare digits would be read as decimals. Identifiers are not numbers ("IDX-7001: 4,62" is 4.62)
+    and of "a = b" the right side counts ("1 Satz = 5 Stück" is 5)."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
@@ -29,12 +51,19 @@ def dec(value) -> Decimal | None:
     if isinstance(value, float):
         return Decimal(repr(value))
     raw = str(value)
-    text = re.sub(r"[^\d,.\-]", "", re.sub(r"\b[a-z]{2}[-_][A-Z]{2}\b", "", raw))
-    if not re.search(r"\d", text):
+    mark = decimal_mark(raw)
+    body = IDENTIFIER.sub(" ", TAG.sub(" ", raw))
+    if "=" in body:
+        body = body.rsplit("=", 1)[1]
+    token = NUMBER.search(body)
+    if not token:
         return None
-    if re.search(r"\ben[-_]US\b", raw):  # comma groups thousands, dot marks decimals
+    text = re.sub(r"[ \u00a0\u202f']", "", token.group())
+    if mark and re.search(r"\%s(?!\d{3}(?:\D|$))" % ("." if mark == "," else ","), text):
+        mark = None  # "1.2345 (from the German format)": a separator the stated format groups by, without 3 digits
+    if mark == ".":  # comma groups thousands, dot marks decimals
         text = text.replace(",", "")
-    elif re.search(r"\bde[-_]DE\b", raw):  # dot groups thousands, comma marks decimals
+    elif mark == ",":  # dot groups thousands, comma marks decimals
         text = text.replace(".", "").replace(",", ".")
     elif "," in text and "." in text:
         # whichever separator comes last is the decimal one
@@ -47,7 +76,7 @@ def dec(value) -> Decimal | None:
     elif text.count(".") > 1:  # "1.234.567": dots grouping thousands
         text = text.replace(".", "")
     try:
-        return Decimal(text)
+        return Decimal(text.rstrip(".,") or "x")
     except InvalidOperation:
         return None
 
@@ -55,7 +84,7 @@ def dec(value) -> Decimal | None:
 def whole(value) -> Decimal | None:
     """A count (pieces, a price unit, a minimum quantity, stock): "1.000" or "1,250 ST" group thousands here, where
     dec() would read a lone separator before three digits as decimals."""
-    if isinstance(value, str) and not re.search(r"\b[a-z]{2}[-_][A-Z]{2}\b", value) \
+    if isinstance(value, str) and not TAG.search(value) \
             and re.fullmatch(r"\s*\d{1,3}(?:([.,])\d{3})(?:\1\d{3})*\s*[^\d.,]*", value):
         return Decimal(re.sub(r"[^\d]", "", value))
     return dec(value)
@@ -63,18 +92,30 @@ def whole(value) -> Decimal | None:
 
 def tagged(value, number_format: str | None):
     """A scale value with the condition's number format attached when only that format can tell what it means
-    ("181.429" per hundred in de-DE is 181429, not 181.429)."""
-    if number_format and isinstance(value, str) and not re.search(r"\b[a-z]{2}[-_][A-Z]{2}\b", value) \
+    ("142.736" per hundred in de-DE is 142736, not 142.736)."""
+    if number_format and isinstance(value, str) and not TAG.search(value) \
             and re.fullmatch(r"\s*[1-9]\d{0,2}[.,]\d{3}\s*", value):
         return f"{value} ({number_format})"
     return value
 
 
 def kilograms(value) -> Decimal | None:
-    """A mass in kilograms; one written in grams ("1250 g") is converted."""
+    """A mass in kilograms, by the unit written after the number: grams ("1.250 g" is 1.25 kg), milligrams, tonnes;
+    kilograms or no unit as they are."""
+    if not isinstance(value, str):
+        return dec(value)
+    unit = re.search(r"\d\s*(mg|kg|kilogramm\w*|g|gr|gramm\w*|grams?|t|tonnen?|tons?)\b", value, re.I)
+    name = unit.group(1).lower() if unit else ""
+    if name in ("g", "gr") or name.startswith("gramm") or name.startswith("gram"):
+        amount = whole(value)
+        return None if amount is None else amount / 1000
     amount = dec(value)
-    if amount is not None and isinstance(value, str) and re.search(r"\d\s*g\b", value) and "kg" not in value.lower():
-        amount /= 1000
+    if amount is None:
+        return None
+    if name == "mg":
+        return amount / 1000000
+    if name in ("t", "tonne", "tonnen", "ton", "tons"):
+        return amount * 1000
     return amount
 
 
@@ -88,16 +129,34 @@ def position_key(position: str):
     return [(0, int(part), "") if part.isdigit() else (1, 0, part) for part in re.split(r"(\d+)", str(position)) if part]
 
 
+MONTHS = {name: number for number, names in enumerate((
+    ("januar", "january", "jan", "jän"), ("februar", "february", "feb"), ("märz", "maerz", "march", "mar", "mär"),
+    ("april", "apr"), ("mai", "may"), ("juni", "june", "jun"), ("juli", "july", "jul"), ("august", "aug"),
+    ("september", "sept", "sep"), ("oktober", "october", "okt", "oct"), ("november", "nov"),
+    ("dezember", "december", "dez", "dec")), 1) for name in names}
+
+
 def day(value) -> str | None:
-    """The calendar date (YYYY-MM-DD) of an ISO date or timestamp, or of a German date (25.01.2027)."""
+    """The calendar date (YYYY-MM-DD) of an ISO date or timestamp, a German date (25.01.2027, 25.01.27), a date
+    with a weekday in front ("Mo, 25.01.2027"), with a month name ("25. Januar 2027", "Jan 25, 2027") or with
+    slashes in year-first order (2027/01/25). Day-month order of other slashed dates is left to the model."""
     if not value:
         return None
     text = str(value).strip()
-    if match := re.match(r"(\d{4})-(\d{2})-(\d{2})", text):
-        return "-".join(match.groups())
-    if match := re.match(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", text):
-        d, m, y = match.groups()
+    if match := re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text):
+        y, m, d = match.groups()
         return f"{y}-{int(m):02d}-{int(d):02d}"
+    if match := re.search(r"(?<!\d)(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})(?![\d])", text):
+        d, m, y = match.groups()
+        return f"{'20' + y if len(y) == 2 else y}-{int(m):02d}-{int(d):02d}"
+    if match := re.search(r"(?<!\d)(\d{1,2})\.?\s+([A-Za-zÄÖÜäöü]{3,9})\.?\s+(\d{4})", text):
+        d, name, y = match.groups()
+        if name.lower() in MONTHS:
+            return f"{y}-{MONTHS[name.lower()]:02d}-{int(d):02d}"
+    if match := re.search(r"([A-Za-zÄÖÜäöü]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})", text):
+        name, d, y = match.groups()
+        if name.lower() in MONTHS:
+            return f"{y}-{MONTHS[name.lower()]:02d}-{int(d):02d}"
     return None
 
 
@@ -113,12 +172,26 @@ def stamp(value) -> str:
     return f"{day(text) or ''} {clock}"
 
 
-def final_quantity(position: dict) -> int:
+ISO_ZONED = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})$")
+
+
+def _after(date, scenario_day: str | None, scenario_date=None) -> bool:
+    """Whether a record is dated after the scenario: to the minute when both carry a time zone, else by day (a local
+    time without a zone must not be filtered out on the scenario day itself)."""
+    if scenario_date and ISO_ZONED.match(str(date or "").strip()) and ISO_ZONED.match(str(scenario_date).strip()):
+        return stamp(date) > stamp(scenario_date)
+    when = day(date)
+    return bool(scenario_day and when and when > scenario_day)
+
+
+def final_quantity(position: dict, scenario_day: str | None = None, scenario_date=None) -> int:
     """Rules 1, "withdrawn answers" and "units": the latest dated quantity change that was not withdrawn, else the
-    tender quantity; sets are converted to pieces with the governing specification's pieces per set."""
+    tender quantity; sets are converted to pieces with the governing specification's pieces per set. A change dated
+    after the scenario date has not happened yet ("authority and time")."""
     withdrawn = {str(number).strip() for number in position.get("withdrawn_qa_numbers") or []}
     changes = [change for change in position.get("quantity_changes") or []
-               if str(change.get("qa_number", "")).strip() not in withdrawn and change.get("quantity") is not None]
+               if str(change.get("qa_number", "")).strip() not in withdrawn and change.get("quantity") is not None
+               and not _after(change.get("date"), scenario_day, scenario_date)]
     quantity = whole(position.get("tender_quantity")) or ZERO
     if changes:
         latest = max(changes, key=lambda change: stamp(change.get("date")))
@@ -142,11 +215,31 @@ def scale_price(price: dict, quantity: int) -> Decimal | None:
     per_piece = amount / (whole(price.get("price_unit")) or Decimal(1))
     currency = (price.get("currency") or "EUR").strip().upper()
     if currency != "EUR":
-        rate = dec(price.get("eur_per_currency_unit"))
+        rate = eur_per_unit(price, currency)
         if rate is None:
             return None
         per_piece *= rate
     return money(per_piece)
+
+
+def eur_per_unit(price: dict, currency: str) -> Decimal | None:
+    """EUR per unit of the condition's currency: as given, or from a quote the other way round (units per EUR), or
+    from a written fixing "1 XYZ = 1,2345 EUR" / "1 EUR = 0,8100 XYZ"."""
+    given = price.get("eur_per_currency_unit")
+    fixing = re.search(r"(\d[\d.,]*)\s*([A-Z]{3})\s*=\s*(\d[\d.,]*)\s*([A-Z]{3})",
+                       IDENTIFIER.sub(" ", str(given or "")).upper())  # the first written equation counts
+    if fixing:
+        a, b = dec(fixing[1]), dec(fixing[3])
+        if a and b:
+            if fixing[4] == "EUR" and fixing[2] != "EUR":
+                return b / a
+            if fixing[2] == "EUR":
+                return a / b
+    rate = dec(given)
+    if rate:
+        return rate
+    inverse = dec(price.get("currency_per_eur"))
+    return Decimal(1) / inverse if inverse else None
 
 
 def metal_rate(index: dict | None, scenario_day: str | None) -> Decimal | None:
@@ -218,7 +311,7 @@ def compute(inputs: dict) -> tuple[dict, list[str]]:
 
     lines = []
     for position in sorted(inputs.get("positions") or [], key=lambda p: position_key(p["position"])):
-        quantity = final_quantity(position)
+        quantity = final_quantity(position, scenario_day, inputs.get("scenario_date"))
         material = position.get("material_number")
         base = scale_price(position.get("price") or {}, quantity) if quantity and material else None
         if not quantity:
@@ -327,9 +420,18 @@ def lead_time(line: dict, demand: dict[str, int]) -> int | None:
 
 
 def weeks_of(value) -> int | None:
-    """Whole weeks from 3, "3", "3.0" or "3 Wochen"; a fraction rounds up (a promise cannot be early)."""
+    """Whole weeks from 3, "3", "3.0" or "3 Wochen"; days become weeks ("14 Tage" is 2, "10 Arbeitstage" is 2); a
+    fraction rounds up (a promise cannot be early)."""
     amount = dec(value)
-    return None if amount is None else int(math.ceil(amount))
+    if amount is None:
+        return None
+    body = IDENTIFIER.sub(" ", TAG.sub(" ", str(value))).rsplit("=", 1)[-1]  # the number dec() read
+    unit = re.match(r"\D*?\d[\d.,]*\s*(arbeitstage|werktage|working days|business days|at\b|tage|days?\b|kalendertage)",
+                    body, re.I)
+    if unit:
+        per = 5 if re.match(r"arbeits|werk|working|business|at", unit.group(1), re.I) else 7
+        amount = amount / per
+    return int(math.ceil(amount))
 
 
 def german(value, decimals: int = 2) -> str:

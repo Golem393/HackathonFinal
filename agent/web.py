@@ -79,11 +79,11 @@ RENDER = r"""
     const off = el.disabled || el.getAttribute('aria-disabled') === 'true' ? ' disabled' : '';
     if (t === 'INPUT' || t === 'TEXTAREA') {
       const type = t === 'TEXTAREA' ? 'textarea' : (el.type || 'text');
-      if (type === 'checkbox' || type === 'radio') return `[${id} ${type} ${q(labelOf(el))}${el.checked ? ' checked' : ''}${off}]`;
+      if (type === 'checkbox' || type === 'radio') return `[${id} ${type} ${q(labelOf(el))}${el.checked ? ' checked' : ''}${el.required ? ' required' : ''}${off}]`;
       if (['submit', 'button', 'reset', 'image'].includes(type)) return `[${id} button ${q(clip(el.value || labelOf(el) || type, 80))}${off}]`;
       if (type === 'file') return `[${id} file-input ${q(labelOf(el))}${off}]`;
       const kind = type === 'text' ? 'input' : `${type}-input`;
-      const hint = described(el);
+      const hint = described(el) + (type === 'number' ? ['min', 'max', 'step'].filter((a) => el.getAttribute(a)).map((a) => ` ${a}=${el.getAttribute(a)}`).join('') : '');
       return `[${id} ${kind} ${q(labelOf(el))} value=${q(clip(el.value, 120))}${el.readOnly ? ' readonly' : ''}${el.required ? ' required' : ''}${hint ? ` about=${q(hint)}` : ''}${off}]`;
     }
     if (t === 'SELECT') {
@@ -91,7 +91,7 @@ RENDER = r"""
       const chosen = opts.filter((o) => o.selected).map((o) => clip(o.text, 60)).join(', ');
       const list = opts.slice(0, 40).map((o) => q(clip(o.text, 60))).join(' | ');
       const hint = described(el);
-      return `[${id} select ${q(labelOf(el))} selected=${q(chosen)} options: ${list}${opts.length > 40 ? ` | … ${opts.length - 40} more` : ''}${hint ? ` about=${q(hint)}` : ''}${off}]`;
+      return `[${id} select ${q(labelOf(el))} selected=${q(chosen)} options: ${list}${opts.length > 40 ? ` | … ${opts.length - 40} more` : ''}${hint ? ` about=${q(hint)}` : ''}${el.required ? ' required' : ''}${off}]`;
     }
     const role = el.getAttribute('role') || (t === 'A' ? 'link' : (t === 'BUTTON' || t === 'SUMMARY') ? 'button' : 'clickable');
     const text = clip(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || el.value || '', 100);
@@ -227,6 +227,16 @@ async (url) => {
 """
 
 
+def plain_number(value) -> str:
+    """A number as an HTML number field takes it: "4.321,09" becomes "4321.09"; a plain number stays as it is."""
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+(\.\d+)?", text):
+        return text
+    import calc  # the one place that reads German, English and tagged numbers
+    amount = calc.dec(text)
+    return format(amount, "f") if amount is not None else text
+
+
 def short(text, limit=300) -> str:
     text = re.sub(r"\s+", " ", str(text)).strip()
     return text if len(text) <= limit else text[:limit] + "…"
@@ -258,6 +268,12 @@ def amounts(text: str) -> list[str]:
     return found
 
 
+# counts the browser's "invalid" events from now on: only those mean it kept a form back (run #16 review: a
+# script-handled submit button in a form with an empty required field was reported as not sent)
+INVALID_COUNTER = ("(b) => { const d = b.ownerDocument, w = d.defaultView; w.__agentInvalid = 0; if (!w.__agentListens) {"
+                   " w.__agentListens = true; d.addEventListener('invalid', () => { w.__agentInvalid += 1; }, true); } }")
+
+
 class Site:
     """One website, driven in its own browser: the active tab, its numbered elements, dialogs, new tabs, downloads.
 
@@ -278,6 +294,7 @@ class Site:
         self.trail: deque[str] = deque(maxlen=200)  # addresses viewed and text typed: what the agent searched for
         self.seen_pages: deque[str] = deque(maxlen=60)  # the text of the pages this Site's agent viewed, newest last
         self.secrets: set[str] = set()  # values that may go into a password field (a TAN the team just read)
+        self.last_secret = ""  # the newest TAN: an earlier one may have expired
         self.warned: set[tuple] = set()  # warnings given once (a password field that may not be a login)
         sites = _SITES.setdefault(context, [])
         if not sites:  # one handler per browser hands each new tab to the Site that opened it
@@ -314,12 +331,37 @@ class Site:
 
     async def _dialog(self, dialog):
         # Browser dialogs block the page until answered. The agents only trigger them on purpose (the final
-        # confirmation of a bid is one), so they are accepted and reported in the next view.
-        self.events.append(f"A browser {dialog.type} dialog said {short(dialog.message)!r}; it was accepted.")
+        # confirmation of a bid is one), so they are accepted and reported in the next view. A prompt that asks for a
+        # value (a TAN, a confirmation word) gets it: an empty answer would let the step pass without it.
         try:
+            if dialog.type == "prompt":
+                answer = self._prompt_answer(dialog.message, dialog.default_value)
+                if answer is None:
+                    self.events.append(f"A browser prompt asked {short(dialog.message)!r}; nothing fitting was known, "
+                                       "so it was dismissed: do the step again once you know the answer.")
+                    await dialog.dismiss()
+                    return
+                shown = "the TAN" if answer in self.secrets else repr(answer)
+                self.events.append(f"A browser prompt asked {short(dialog.message)!r}; it was answered with {shown}.")
+                await dialog.accept(answer)
+                return
+            self.events.append(f"A browser {dialog.type} dialog said {short(dialog.message)!r}; it was accepted.")
             await dialog.accept()
         except Exception:
             pass
+
+    def _prompt_answer(self, message: str, default: str) -> str | None:
+        """What a prompt asks for: the TAN just read (it asks for a TAN, PIN or code), the word it quotes to type
+        ("type „VERBINDLICH“ to confirm"), or its own preset value."""
+        quoted = re.findall(r"[„\"»“‚']([^\"“”«»‘’']{2,40})[\"“”«»‘’']", message)
+        if re.search(r"\bTAN\b|\bPIN\b|code", message, re.I):
+            if self.last_secret:
+                return self.last_secret
+            # no TAN read yet: a confirmation word may still be asked for, but never a quoted reference or number
+            return quoted[0].strip() if len(quoted) == 1 and not re.search(r"\d", quoted[0]) else None
+        if len(quoted) == 1:
+            return quoted[0].strip()
+        return default or None
 
     async def _download(self, download):
         target = Path(tempfile.mkdtemp()) / (download.suggested_filename or "download")
@@ -330,6 +372,16 @@ class Site:
             return
         self.downloads.append(target)
         self.events.append(f"Downloaded {target.name!r}: read it with read_document(download={len(self.downloads)}).")
+
+    async def nudge(self):
+        """A sign of life for a page that logs out when idle, without any request (a reload of a signing step could
+        reissue a TAN or reset the form): a mouse move inside the page."""
+        try:
+            page = await self._active()
+            await page.evaluate("() => { for (const t of [document, window]) t.dispatchEvent(new MouseEvent("
+                                "'mousemove', {clientX: 1, clientY: 1, bubbles: true})); }")
+        except Exception:
+            pass
 
     def remember(self, text: str):
         """Notes the numbers a page or document showed (a recorded value must have been on one of them) and the
@@ -461,6 +513,43 @@ class Site:
             raise LookupError(f"There is no element [{ref}] on the page as last viewed; look at the current view.")
         return frame.locator(f'[data-agent-ref="{int(ref)}"]').first
 
+    @staticmethod
+    async def _read(element) -> str:
+        try:
+            return await element.input_value(timeout=2000)
+        except Exception:
+            return ""
+
+    async def _make_it_stick(self, element, value: str, before: str) -> str:
+        """Some forms take only real keystrokes and drop a value set by script (run #11's form fields read empty
+        after a fill). A dropped value (the field empty, or as before) is typed key by key; a split field (a TAN in
+        several boxes, a length limit) is reported, not forced. Returns a problem, or ""."""
+        await asyncio.sleep(0.15)
+        held = await self._read(element)
+        if held == value:
+            return ""  # kept as given, also when the field held it already (run #16 reported that as split)
+        if held.strip() and len(held) < len(value) and value.startswith(held):
+            return f"holds {held!r}: the value may span several fields; fill each part"
+        if held.strip() and held != before:
+            return ""  # kept, possibly reformatted by the form
+        limit = await element.evaluate("(e) => e.maxLength", timeout=2000)
+        if isinstance(limit, int) and 0 < limit < len(value):
+            return f"holds {held!r}: the value may span several fields; fill each part"
+        try:
+            await element.click(timeout=3000)
+            page = await self._active()
+            await page.keyboard.press("ControlOrMeta+a")
+            await page.keyboard.type(value, delay=20)
+            await element.evaluate("(e) => { e.dispatchEvent(new Event('change', {bubbles: true})); e.blur(); }",
+                                   timeout=2000)
+        except Exception:
+            # in run #16 a popup in a fresh tab covered the field: the value never landed and the click was blocked
+            return (f"reads {held!r}, not {value!r}: something covers the field or the page changed (a popup or "
+                    "dialog to close first?); look at the page")
+        await asyncio.sleep(0.15)
+        held = await self._read(element)
+        return "" if held.strip() and held != before else f"does not keep {value!r} (it reads {held!r}): look at the page"
+
     async def _select(self, element, value):
         """Chooses an option by its label or value, else the option choose_option() finds (a material number
         followed by a description, the next larger size, a 'none' option)."""
@@ -482,6 +571,18 @@ class Site:
         element = self._element(ref)
         self.acted_at = time.time()
         try:
+            present = await element.count()
+        except Exception:
+            present = 1
+        if not present:  # only view() hands out refs: an element that left the page never gets this one back
+            return f"[{ref}] is no longer on the page (it changed since the last view):\n\n" + await self.view()
+        blocked = await self._unsendable(element)
+        if blocked:  # count the browser's own validation: a page script may handle the click and move on instead
+            try:
+                await element.evaluate(INVALID_COUNTER, timeout=2000)
+            except Exception:
+                blocked = ""
+        try:
             # short: a popup that covers the page (they reappear on many pages) should cost seconds, not a minute
             await element.click(timeout=2500)
         except Exception as error:
@@ -490,7 +591,30 @@ class Site:
             except Exception:
                 return f"Could not click [{ref}]: {short(error)}\n\n" + await self.view()
         await self._settle()
+        if blocked:
+            try:
+                blocked = blocked if await element.evaluate(
+                    "(b) => b.ownerDocument.defaultView.__agentInvalid || 0", timeout=1500) else ""
+            except Exception:
+                blocked = ""  # the button is gone or the page moved on: the form was sent
+        if blocked:  # the browser kept the form back: say which fields it wants
+            self.log(f"[{self.id}] the form was not sent: {blocked}")
+            return f"The form was not sent: the browser requires these fields first: {blocked}\n\n" + await self.view()
         return await self.view()
+
+    async def _unsendable(self, element) -> str:
+        """For a button that sends a form the browser checks: the fields that keep it from being sent (without
+        firing the page's own invalid handlers), else ""."""
+        try:
+            return await element.evaluate(
+                "(b) => { const t = (b.type || '').toLowerCase(); const f = b.form;"
+                " if (!f || !(b.tagName === 'BUTTON' ? t !== 'button' && t !== 'reset' : t === 'submit' || t === 'image')"
+                " || f.noValidate || b.formNoValidate) return '';"
+                " return [...f.elements].filter((e) => e.willValidate && !e.validity.valid).map((e) =>"
+                " `[${e.getAttribute('data-agent-ref') || '?'}] ${((e.labels && e.labels[0] && e.labels[0].innerText) ||"
+                " e.name || '').trim().slice(0, 60)} (${e.validationMessage})`).join('; '); }", timeout=3000)
+        except Exception:
+            return ""
 
     async def fill(self, fields: list[dict]) -> str:
         """Several inputs at once: text is typed, selects choose the option by label or value, checkboxes take
@@ -522,8 +646,14 @@ class Site:
                     except Exception:
                         await element.set_checked(want, force=True, timeout=3000)
                 else:
-                    await element.fill(str(value), timeout=4000)
+                    before = await self._read(element)
+                    # a number field takes "4321.09", never the German "4.321,09" (another form may use one)
+                    await element.fill(plain_number(value) if kind == "number" else str(value), timeout=4000)
                     self.trail.append(str(value))
+                    if kind in ("", "text", "search", "email", "tel", "url", "textarea") and str(value):
+                        problem = await self._make_it_stick(element, str(value), before)
+                        if problem:
+                            problems.append(f"[{ref}] {problem}")
             except Exception as error:
                 problems.append(f"[{ref}]: {short(error, 200)}")
         await self._settle()
@@ -551,6 +681,8 @@ class Site:
                     "clicked. Use click() for buttons and links, fill() for selects and checkboxes.\n\n"
                     + await self.view())
         self.trail.append(text)
+        if kind["tag"] == "INPUT" and kind["type"] == "number":
+            text = plain_number(text)
         try:
             await element.fill(text, timeout=4000)
         except Exception:
@@ -563,12 +695,29 @@ class Site:
         await self._settle()
         return await self.view()
 
-    async def drag(self, ref, dx: float | None = None, dy: float = 0) -> str:
+    async def drag(self, ref, dx: float | None = None, dy: float = 0, to=None) -> str:
         """Drags an element with the mouse, such as a slider's handle or a range input; without dx, all the way to
-        the right end of its track."""
+        the right end of its track; with `to`, onto the centre of another element (a piece into its slot)."""
         self.acted_at = time.time()
         element = self._element(ref)
         page = await self._active()
+        # onto another element only: a "to" naming the element itself, or given with a distance, is a slider drag
+        # (run #13: the model passed to=<the slider> with dx, and the slider never moved)
+        if to is not None and int(to) != int(ref) and dx is None:
+            await element.scroll_into_view_if_needed(timeout=3000)
+            start, target = await element.bounding_box(), await self._element(to).bounding_box()
+            if not start or not target:
+                return "An element is not on screen.\n\n" + await self.view()
+            x, y = start["x"] + start["width"] / 2, start["y"] + start["height"] / 2
+            end_x, end_y = target["x"] + target["width"] / 2, target["y"] + target["height"] / 2
+            await page.mouse.move(x, y)
+            await page.mouse.down()
+            for step in range(1, 21):
+                await page.mouse.move(x + (end_x - x) * step / 20, y + (end_y - y) * step / 20)
+                await asyncio.sleep(0.02)
+            await page.mouse.up()
+            await self._settle()
+            return await self.view()
         await element.scroll_into_view_if_needed(timeout=3000)
         box = await element.bounding_box()
         if not box:
@@ -603,8 +752,64 @@ class Site:
                 report = "The slider was replaced by the page (it may have unlocked).\n\n"
         return report + await self.view()
 
+    async def hold(self, ref, seconds: float = 3.0) -> str:
+        """Presses the mouse on an element and keeps it down (a "press and hold" confirmation), then releases."""
+        self.acted_at = time.time()
+        element = self._element(ref)
+        page = await self._active()
+        await element.scroll_into_view_if_needed(timeout=3000)
+        box = await element.bounding_box()
+        if not box:
+            return "The element is not on screen.\n\n" + await self.view()
+        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await page.mouse.down()
+        await asyncio.sleep(max(0.5, min(float(seconds), 15.0)))
+        await page.mouse.up()
+        await self._settle()
+        return await self.view()
+
+    KEYS = {name.lower(): name for name in ("Enter", "Escape", "Tab", "Backspace", "Delete", "Space", "Home", "End",
+                                              "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                                              "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12")}
+
+    async def scroll(self, ref=None) -> str:
+        """Scrolls a box to its end (terms that must be read before a checkbox unlocks): the given element or the
+        boxes around it, or else every scrollable box of the page and the page itself. The view already shows all
+        text, so this is for unlocking, not reading."""
+        self.acted_at = time.time()
+        page = await self._active()
+        script = ("(start) => { const boxes = []; let e = start;"
+                  " while (e) { if (e.scrollHeight > e.clientHeight + 1) boxes.push(e); e = e.parentElement; }"
+                  " if (!start) document.querySelectorAll('*').forEach((x) => { const o = getComputedStyle(x).overflowY;"
+                  " if ((o === 'auto' || o === 'scroll') && x.scrollHeight > x.clientHeight + 1) boxes.push(x); });"
+                  " for (const b of boxes) { b.scrollTop = b.scrollHeight; b.dispatchEvent(new Event('scroll')); }"
+                  " window.scrollTo(0, document.body.scrollHeight); return boxes.length; }")
+        if ref is not None:
+            element = self._element(ref)
+            try:  # real wheel events first: some pages only count those
+                box = await element.bounding_box()
+                if box:
+                    await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    for _ in range(10):
+                        await page.mouse.wheel(0, 2000)
+            except Exception:
+                pass
+            await element.evaluate(script, timeout=4000)
+        else:
+            for frame in page.frames:
+                try:
+                    await frame.evaluate(script, None)
+                except Exception:
+                    continue
+        await self._settle()
+        return await self.view()
+
     async def press(self, key: str, ref=None) -> str:
         self.acted_at = time.time()
+        # key names are case-sensitive for the browser: "TAB" or "enter" would press nothing
+        key = "+".join(self.KEYS.get(part.lower(), {"esc": "Escape", "return": "Enter", "down": "ArrowDown",
+                                                     "up": "ArrowUp"}.get(part.lower(), part))
+                       for part in str(key).split("+"))
         if ref is not None:
             await self._element(ref).press(key, timeout=4000)
         else:
@@ -686,14 +891,49 @@ class Site:
                 continue
             if not found:
                 continue
+            problems = []
             user = frame.locator('[data-agent-login="user"]')
-            if await user.count():
-                await user.fill(str(self.credentials.get("username", "")))
             password = frame.locator('[data-agent-login="password"]')
-            await password.fill(str(self.credentials.get("password", "")))
-            await password.press("Enter")
+            for field, value, what in ((user, self.credentials.get("username", ""), "user name"),
+                                       (password, self.credentials.get("password", ""), "password")):
+                try:
+                    if not await field.count():
+                        continue
+                    # a preset or locked field (a fixed client or user name) is left as it is
+                    if not await field.is_enabled(timeout=2000) or not await field.is_editable(timeout=2000):
+                        problems.append(f"the {what} field is locked and was left as it is")
+                        continue
+                    await field.fill(str(value), timeout=5000)
+                except Exception as error:
+                    problems.append(f"the {what} field could not be filled ({short(error, 80)})")
+            try:
+                await password.press("Enter", timeout=5000)
+            except Exception as error:
+                problems.append(f"Enter could not be pressed ({short(error, 80)})")
             await self._settle()
-            return "Submitted the login form.\n\n" + await self.view()
+            note = ("; ".join(problems) + ": finish the login yourself.\n\n") if problems else ""
+            return "Submitted the login form. " + note + "\n\n" + await self.view()
+        # a login in two steps: the user name first, the password on the next page
+        for frame in page.frames:
+            try:
+                user = frame.locator("input[autocomplete=username], input[type=email], input[name*=user i], "
+                                     "input[name*=login i], input[id*=user i], input[name*=benutz i]").first
+                if not await user.count() or not await user.is_visible(timeout=1000) \
+                        or not await user.is_editable(timeout=1000):
+                    continue
+                await user.fill(str(self.credentials.get("username", "")), timeout=5000)
+                await user.press("Enter", timeout=5000)
+                for _ in range(20):  # the password field appears on the next page or in place
+                    await asyncio.sleep(0.5)
+                    password = (await self._active()).locator("input[type=password]").first
+                    if await password.count() and await password.is_visible(timeout=500):
+                        await password.fill(str(self.credentials.get("password", "")), timeout=5000)
+                        await password.press("Enter", timeout=5000)
+                        await self._settle()
+                        return "Submitted the login in two steps.\n\n" + await self.view()
+                return "Entered the user name; no password field followed.\n\n" + await self.view()
+            except Exception:
+                continue
         return "There is no login form (password field) on this page.\n\n" + await self.view()
 
     async def _pick(self, script: str, argument: str):
@@ -713,10 +953,13 @@ class Site:
         then clicks the `apply` button (except after the last step, or where a step says "apply": false) and waits
         for the next field to open. Stops at the first step that cannot be done and says why."""
         done: list[str] = []
+        skipped: list[str] = []
+        applied = False
         for number, step in enumerate(steps):
             field, value = str(step.get("field", "")), str(step.get("value", ""))
             frame, found = None, None
-            for _ in range(12):  # after an apply the next field can take a moment to unlock
+            # after an apply the next field can take a moment to unlock; before any apply a missing field is missing
+            for _ in range(12 if applied else 3):
                 frame, found = await self._pick(FIND_SELECT, field)
                 if found and not found["disabled"]:
                     break
@@ -724,6 +967,7 @@ class Site:
             so_far = "; ".join(done) or "nothing yet"
             if not found:  # a field this form does not have: skipped, the chain goes on
                 done.append(f"(no field {field!r}: skipped)")
+                skipped.append(field)
                 continue
             if found["disabled"]:
                 return (f"The field {found['label']!r} is still locked (chosen so far: {so_far}); the choice before "
@@ -749,7 +993,13 @@ class Site:
                         await button.evaluate("(e) => e.click()", timeout=3000)
                     except Exception:
                         pass  # the click started a reload that took the button away: the wait below covers it
+                applied = True
                 await self._settle()
+        if skipped and len(skipped) == len(steps):
+            return ("Nothing was chosen: this page has no selection list (<select>) labelled "
+                    + ", ".join(repr(f) for f in skipped) + ". If the form uses other controls (a list that opens on "
+                    "click, option tiles, a search field), set each value with click() or fill().\n\n"
+                    + await self.view())
         return "Chosen: " + "; ".join(done) + "\n\n" + await self.view()
 
     async def screenshot(self) -> dict:
@@ -825,7 +1075,12 @@ INVISIBLE = re.compile("[\u200b-\u200d\u2060\ufeff\u00ad]")
 
 
 def _number(text) -> float | None:
-    match = re.search(r"-?\d+(?:[.,]\d+)?", str(text))
+    """The first number of a text; "1.250" and "1,250" with thousands groups are 1250 (sizes are whole numbers)."""
+    text = str(text)
+    grouped = re.search(r"(?<![\d.,])-?[1-9]\d{0,2}([.,])\d{3}(?:\1\d{3})*(?![\d.,])", text)
+    if grouped:
+        return float(re.sub(r"[.,]", "", grouped.group()))
+    match = re.search(r"-?\d+(?:[.,]\d+)?", text)
     return float(match.group().replace(",", ".")) if match else None
 
 
@@ -846,6 +1101,12 @@ def choose_option(options: list[dict], value) -> dict | None:
     exact = [o for o in real if want in (norm(o["text"]), norm(o["value"]))]
     if exact:
         return exact[0]
+    # the same text with its thousands groups written another way ("1.250 mm" and "1250 mm")
+    def ungrouped(text):
+        return re.sub(r"(?<=\d)[.,](?=\d{3}(?!\d))", "", norm(text))
+    same = [o for o in real if ungrouped(o["text"]) == ungrouped(value)]
+    if len(same) == 1:
+        return same[0]
     # "none" is worded differently by each source ("keine", "ohne …", "none", "-"): the one option saying so
     if NONE_WORD.fullmatch(want):
         negative = [o for o in real if NEGATION.search(norm(o["text"]))]
@@ -856,10 +1117,12 @@ def choose_option(options: list[dict], value) -> dict | None:
         if len(hits) == 1:
             return hits[0]
     wanted = _number(value)
-    if wanted is not None and re.fullmatch(r"-?\d+(?:[.,]\d+)?\s*\w{0,3}", want):
+    if wanted is not None and re.fullmatch(r"-?[\d.,]+\s*\w{0,3}", want):
         above = [(n, o) for o in real if (n := _number(o["text"])) is not None and n >= wanted]
         if above:
-            return min(above, key=lambda pair: pair[0])[1]
+            number, option = min(above, key=lambda pair: pair[0])
+            # far above what was asked is not "the next size": a unit or a misread number, not a match
+            return option if wanted <= 0 or number <= wanted * 10 else None
     return None
 
 
@@ -960,6 +1223,7 @@ def html_text(html: str) -> str:
 def toolbox(site: Site) -> list[tuple[dict, object]]:
     """The browser tools every agent gets, as (OpenAI tool schema, coroutine) pairs."""
     ref = {"type": "integer", "description": "The element's number in the page view, e.g. 12 for [12 button ...]"}
+    number = {"type": "integer"}  # the same element number: described once, at click and fill
     return [
         (_tool("view", "Show the current page again (it may have changed by itself).", {}), site.view),
         (_tool("more", "Show the next part of a long page.", {}), site.more),
@@ -972,12 +1236,18 @@ def toolbox(site: Site) -> list[tuple[dict, object]]:
                    "ref": ref, "value": {"type": ["string", "number", "boolean"]}}, "required": ["ref", "value"]}}},
                ["fields"]), site.fill),
         (_tool("type", "Type text into one input, optionally pressing Enter afterwards (to search, for example).",
-               {"ref": ref, "text": {"type": "string"}, "enter": {"type": "boolean"}}, ["ref", "text"]), site.type),
+               {"ref": number, "text": {"type": "string"}, "enter": {"type": "boolean"}}, ["ref", "text"]), site.type),
         (_tool("drag", "Drag an element with the mouse: a slider handle or range input (without dx: all the way to "
-                       "the right end), or any draggable item by dx/dy pixels.",
-               {"ref": ref, "dx": {"type": "number"}, "dy": {"type": "number"}}, ["ref"]), site.drag),
+                       "the right end), any draggable item by dx/dy pixels, or onto another element (to).",
+               {"ref": number, "dx": {"type": "number"}, "dy": {"type": "number"},
+                "to": {"type": "integer", "description": "Only to drop it on ANOTHER element; leave out for sliders"}},
+               ["ref"]), site.drag),
+        (_tool("scroll", "Scroll a box (or every box) to its end: terms you must scroll through before a checkbox "
+                         "unlocks. Not needed for reading.", {"ref": number}), site.scroll),
+        (_tool("hold", "Press and hold the mouse on an element for some seconds (a hold-to-confirm control).",
+               {"ref": number, "seconds": {"type": "number"}}, ["ref"]), site.hold),
         (_tool("press", "Press a key (Enter, Escape, Tab, F4, ArrowDown, ...), on an element or the page.",
-               {"key": {"type": "string"}, "ref": ref}, ["key"]), site.press),
+               {"key": {"type": "string"}, "ref": number}, ["key"]), site.press),
         (_tool("goto", "Open a URL or a path on this website.", {"url": {"type": "string"}}, ["url"]), site.goto),
         (_tool("reload", "Reload the page, e.g. after an error page.", {}), site.reload),
         (_tool("back", "Browser back. Never use it inside a multi-step form: it clears the later steps.", {}), site.back),
@@ -986,12 +1256,11 @@ def toolbox(site: Site) -> list[tuple[dict, object]]:
         (_tool("fresh_tab", "Continue in a new tab on this website (the login carries over), at its start page or a "
                             "given address: when a page is stuck, does not respond or keeps timing out.",
                {"url": {"type": "string"}}), site.fresh_tab),
-        (_tool("login", "Log in: fills this website's username and password into the visible login form and submits "
-                        "it. Use it whenever a login page appears, including after a session expired.", {}), site.login),
+        (_tool("login", "Log in with this website's credentials (a login page, an expired session).", {}), site.login),
         (_tool("read_document", "Read a file as text: a link to a PDF, ZIP, Word, CSV or text file, a frame whose "
                                 "content is not shown, or a downloaded file. Not for web pages: open those with "
                                 "goto or click. Give the element number, a url, or the download number.",
-               {"ref": ref, "url": {"type": "string"}, "download": {"type": "integer"}}), site.read_document),
+               {"ref": number, "url": {"type": "string"}, "download": {"type": "integer"}}), site.read_document),
         (_tool("screenshot", "Look at the screen as an image, when the text view leaves something unclear (a value "
                              "that seems hidden, a layout, a code shown as a picture).", {}), site.screenshot),
         (_tool("wait", "Wait some seconds (at most 30), then show the page.", {"seconds": {"type": "number"}},
@@ -1001,5 +1270,5 @@ def toolbox(site: Site) -> list[tuple[dict, object]]:
 
 def _tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": {
-        "type": "object", "properties": properties, "required": required or []}}}
+        "type": "object", "properties": properties, **({"required": required} if required else {})}}}
 

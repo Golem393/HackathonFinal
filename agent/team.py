@@ -27,6 +27,8 @@ class Ledger:
     def __init__(self):
         self.entries: list[dict] = []
         self.latest_inputs: dict | None = None  # the last calculation inputs a gap check produced
+        # per website, the missing facts a gap check handed to an agent of their own: (fact, its task, agent name)
+        self.handed: dict[str, list[tuple]] = {}
 
     def add(self, site: str, url: str, topic: str, facts, source: str = "", agent: str | None = None) -> str:
         self.entries.append({"n": len(self.entries) + 1, "at": time.strftime("%H:%M:%S", time.gmtime()),
@@ -44,10 +46,24 @@ class Ledger:
         text = "\n".join(lines)
         return ("[… older records: read_notes()]\n" + text[-limit:]) if len(text) > limit else text
 
+    def for_solver(self) -> str:
+        """Every record for the solver, compactly: the order (n) and the source stay, the recording clock does not."""
+        def compact(entry):
+            entry = {key: value for key, value in entry.items() if key != "at"}
+            if entry.get("agent") == entry.get("site"):
+                entry.pop("agent")
+            return json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+        return "\n".join(compact(entry) for entry in self.entries) or "Nothing recorded yet."
+
     def text(self, topic: str | None = None, exclude_agent: str | None = None, limit: int = 200000) -> str:
-        entries = [entry for entry in self.entries
-                   if (not topic or topic.lower() in json.dumps(entry, ensure_ascii=False).lower())
-                   and entry["agent"] != exclude_agent]
+        def matches(entry, words) -> bool:
+            body = json.dumps(entry, ensure_ascii=False).lower()
+            return all(word in body for word in words)
+        candidates = [entry for entry in self.entries if entry["agent"] != exclude_agent]
+        entries = [entry for entry in candidates if not topic or matches(entry, [topic.lower()])]
+        if topic and not entries:  # "price condition HZ" finds the records naming all of its words
+            words = [word for word in re.findall(r"[\w-]{3,}", topic.lower())]
+            entries = [entry for entry in candidates if words and matches(entry, words)]
         text = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
         return text[-limit:] if text else "Nothing recorded yet."
 
@@ -130,6 +146,7 @@ def transliterated(text: str) -> str:
 
 
 DATE_KEYS = re.compile(r"date|datum|sent|gesendet|received|empfangen|zeit|time", re.I)
+VALIDITY_KEYS = re.compile(r"valid|gültig|gueltig|\bab\b|\bbis\b|\bfrom\b|\bto\b|window|zeitraum", re.I)  # not when sent
 
 
 def record_days(facts) -> list[str]:
@@ -139,7 +156,7 @@ def record_days(facts) -> list[str]:
         for key, value in facts.items():
             if isinstance(value, (dict, list)):
                 days += record_days(value)
-            elif DATE_KEYS.search(str(key)) and calc.day(value):
+            elif DATE_KEYS.search(str(key)) and not VALIDITY_KEYS.search(str(key)) and calc.day(value):
                 days.append(calc.day(value))
     elif isinstance(facts, list):
         for value in facts:
@@ -271,13 +288,34 @@ class Topics:
             return ("Give the message's date as its header shows it (e.g. DD.MM.YYYY HH:MM), and record it with the "
                     "message if it is not in your record.")
         expected = str(self.topics[name].get("sender") or "").strip().lower()
-        if expected and sender and not sender.strip().lower().startswith(expected + "@") \
-                and (name, sender) not in self.warned:
+        address = re.search(r"([\w.+-]+)@([\w.-]+)", sender or "")
+        local, domain = (address.group(1).lower(), address.group(2).lower().rstrip(".")) if address else ("", "")
+        if expected and address and local != expected and (name, sender) not in self.warned:
             self.warned.add((name, sender))
             return (f"The brief authorizes {expected}@ for {name}; {sender} is another sender, whose message does not "
                     "apply. Look for the message from the authorized sender; if this one is from it after all, close "
                     "the topic again with the same sender.")
+        own = self.mailbox_domain()
+        if own and domain and domain != own and (name, "domain") not in self.warned:
+            # the same name at another domain, or a quoted or forwarded approval, is another sender
+            self.warned.add((name, "domain"))
+            return (f"{sender} is not at the bidder's mailbox domain {own}: the same name at another domain, or a "
+                    f"message quoted or forwarded by someone else, is another sender. Open the message "
+                    f"{expected or local}@{own} sent; if this one is it after all, close the topic again.")
         return self._close(name, f"{subject or 'message'} of {date or days[0] if days else '?'}")
+
+    def mailbox_domain(self) -> str:
+        """The bidder's own mail domain: from the mailbox login when it is an address, else the domain most of this
+        mailbox's recorded senders share."""
+        login = str((getattr(self.site, "credentials", None) or {}).get("username") or "")
+        if "@" in login:
+            return login.rsplit("@", 1)[1].lower()
+        domains: dict[str, int] = {}
+        for entry in self.ledger.entries:
+            if entry["site"] == self.site.id:
+                for found in re.findall(r"[\w.+-]+@([\w.-]+\w)", json.dumps(entry["facts"], ensure_ascii=False)):
+                    domains[found.lower()] = domains.get(found.lower(), 0) + 1
+        return max(domains, key=domains.get) if len(domains) > 0 and max(domains.values()) >= 2 else ""
 
     async def check(self, args: dict) -> str | None:
         """finish() is refused while a topic is open."""
@@ -349,8 +387,11 @@ PLAN_SCHEMA = {
     "scenario_date": {"type": "string", "description": "ISO 8601"},
     "sites": {"type": "array", "items": {"type": "object", "properties": {
         "site_id": STRING, "kind": {"type": "string", "enum": ["tender", "specification", "erp", "mail", "other"]},
+        "also": {"type": "array", "items": {"type": "string", "enum": ["tender", "specification", "erp", "mail"]},
+                 "description": "Other kinds of facts the brief says this website holds as well (e.g. a "
+                                "specification inside the materials system, approval messages in a portal), else empty"},
         "holds": {"type": "string", "description": "What the brief says this website holds"}},
-        "required": ["site_id", "kind", "holds"]}},
+        "required": ["site_id", "kind", "also", "holds"]}},
     "tan_site_id": {"type": "string", "description": "The website where the brief says the signing TAN arrives"},
     "mail_topics": {"type": "array", "description": "Every kind of mailbox message the brief's rules use, one entry "
                                                     "each: the discount approval, condition rules, price indices and "
@@ -384,11 +425,42 @@ async def plan(task: dict, deadline: float) -> dict:
     return result
 
 
+ENTER_SECONDS = 60.0  # opening a website (its first page and the login) may not hold an agent up longer
+
+
 async def enter(site: web.Site) -> str:
-    """The website's start page, logged in with the run's credentials if it shows a login form."""
+    """The website's start page, logged in with the run's credentials if it shows a login form. A start that hangs
+    (run #15: one agent never got past it, silently) is given up for a fresh tab, and the model takes over."""
+    try:
+        return await asyncio.wait_for(_enter(site), ENTER_SECONDS)
+    except Exception as error:
+        print(f"[{site.id}] opening the website hung or failed ({error!r}): a fresh tab", flush=True)
+        try:
+            return await asyncio.wait_for(_fresh(site), ENTER_SECONDS)
+        except Exception as again:
+            print(f"[{site.id}] the fresh tab failed too ({again!r})", flush=True)
+            return "The website did not load. Try goto() with its address, or fresh_tab()."
+
+
+async def _fresh(site: web.Site) -> str:
+    """A fresh tab on the start page, logged in when it shows a login form (run #16 review)."""
+    view = await site.fresh_tab()
+    if "password-input" in view:
+        try:
+            return await site.login()
+        except Exception as error:  # the model sees the login form and can try itself
+            print(f"[{site.id}] logging in on the fresh tab failed ({type(error).__name__})", flush=True)
+    return view
+
+
+async def _enter(site: web.Site) -> str:
     first_view = await site.goto(site.url)
     if "password-input" in first_view:  # a login form: the run's credentials go in before the model looks
-        first_view = await site.login()
+        try:
+            first_view = await site.login()
+        except Exception as error:  # an odd login form: the model takes over from the page as it is
+            print(f"[{site.id}] the login did not go through by itself: {error!r}", flush=True)
+            first_view = await site.view()
     return first_view
 
 
@@ -397,6 +469,23 @@ HELPERS = 3  # parallel helpers an ERP agent may run at once, each in its own ta
 
 def kind_of(the_plan: dict, site_id: str) -> str:
     return next((s.get("kind", "") for s in the_plan.get("sites", []) if s.get("site_id") == site_id), "")
+
+
+def mail_site_id(the_plan: dict) -> str | None:
+    """The website holding the messages: the mailbox, else the one website that holds messages as well."""
+    sites = the_plan.get("sites", [])
+    main = next((s.get("site_id") for s in sites if s.get("kind") == "mail"), None)
+    if main:
+        return main
+    also = [s.get("site_id") for s in sites if "mail" in (s.get("also") or [])]
+    return also[0] if len(also) == 1 else None
+
+
+def kinds_of(the_plan: dict, site_id: str) -> list[str]:
+    """Every kind of facts a website holds: its main kind first, then what the brief says it holds as well."""
+    entry = next((s for s in the_plan.get("sites", []) if s.get("site_id") == site_id), {})
+    kinds = [entry.get("kind", "")] + [kind for kind in entry.get("also") or [] if kind != entry.get("kind")]
+    return [kind for kind in kinds if kind]
 HELPER_TASKS: list[asyncio.Task] = []  # every helper agent, stopped at the investigation's hard stop
 KEY = re.compile(r"\b[A-Z][A-Z0-9]*-\d+[A-Z0-9-]*\b")  # identifiers such as group keys and requirement ids
 
@@ -406,20 +495,36 @@ def helper_tools(site: web.Site, task: dict, the_plan: dict, ledger: Ledger, dea
     """delegate(): the agent hands an independent part of its website's work (one requirement's materials) to a
     helper agent in a new tab of the same browser; the model decides what to split, the code runs it in parallel."""
     jobs: list[set[str]] = []
+    refused = [0]  # jobs refused for want of recorded identifiers
 
     async def delegate(job: str) -> str:
         if sum(not helper.done() for helper in helpers) >= HELPERS:
             return f"All {HELPERS} helpers are busy; do this part yourself."
         others = ledger.text(exclude_agent=site.id)
-        named = [key for key in KEY.findall(job) if key in others]
+        # the tender reference is in every record and every job: it says nothing about the part (run #13)
+        reference = the_plan.get("tender_reference", "")
+        named = [key for key in KEY.findall(job) if key in others and key != reference]
         if len(set(named)) < 2:
+            # identifiers of another shape ("WG 4711", "Klasse B12") count when the specification side recorded them
+            spec = " ".join(json.dumps(entry, ensure_ascii=False) for entry in ledger.entries
+                            if kind_of(the_plan, entry["site"]) not in ("tender", "erp") and entry["agent"] != site.id)
+            tokens = {token.strip(".,;:()") for token in re.findall(r"\b[\w./-]*\d[\w./-]*\b|\b[A-ZÄÖÜ]{2,}[\w/-]{2,}\b", job)}
+            shaped = [token for token in tokens if re.search(r"[^\d.,/-]", token) and len(token) >= 3
+                      and token in spec and token != reference]
+            if shaped:
+                named = shaped + named
+        refused[0] += 1 if len(set(named)) < 2 else 0
+        if len(set(named)) < 2 and refused[0] > 2 and any(
+                kind_of(the_plan, entry["site"]) not in ("tender", "erp") for entry in ledger.entries):
+            named = ["(as written)"]  # refused twice already and the specification is recorded: let it go
+        if len(set(named)) < 2 and named != ["(as written)"]:
             # run #10 started helpers before any requirement was recorded: they found nothing to do and stopped
             return ("Name the requirement and its catalogue group (and its attributes) exactly as the other agents "
                     "recorded them (read_notes). If they are not recorded yet, call wait_for_notes() first; a "
                     "helper without them has nothing to look up.")
         tender = " ".join(json.dumps(entry, ensure_ascii=False) for entry in ledger.entries
                           if kind_of(the_plan, entry["site"]) == "tender")
-        if tender and not any(key in tender for key in named):
+        if tender and named != ["(as written)"] and not any(key in tender for key in named):
             return ("No position of the tender refers to that requirement (the tender's records do not name it): "
                     "its materials are never needed. Delegate the requirements the positions use.")
         if time.time() > deadline - 60:
@@ -444,9 +549,7 @@ def helper_tools(site: web.Site, task: dict, the_plan: dict, ledger: Ledger, dea
         print(f"[{name}] started on: {job[:200]}", flush=True)
         return f"Helper {name} works on this in another tab now: do not do it yourself; go on with the rest."
 
-    return [(tool("delegate", "Hand an independent part of the work on this website (e.g. one requirement: its id, "
-                              "catalogue group, attributes and the positions using it) to a helper agent that works "
-                              "on it in parallel in another tab. One call per part.",
+    return [(tool("delegate", "Start a helper on one independent part of this website's work, in another tab.",
                   {"job": {"type": "string", "description": "The part, with every identifier and attribute the "
                                                             "helper needs"}}, ["job"]), delegate)]
 
@@ -457,22 +560,41 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
     kind = next((entry for entry in the_plan.get("sites", []) if entry.get("site_id") == site.id), {})
     reference = the_plan.get("tender_reference", "")
     checklist, helpers, lead, name = None, [], name is None, name or site.id
-    if kind.get("kind") == "erp":
-        extra = prompts.ERP_EXTRA + (prompts.ERP_LEAD if lead else "") + extra
-    elif kind.get("kind") == "mail" and topics:
+    kinds = kinds_of(the_plan, site.id)
+    if kinds and kinds[0] == "erp":
+        helper = not lead and "Your part of this website" in extra
+        extra = prompts.ERP_EXTRA + ("" if helper else prompts.ERP_ROUTING) + (prompts.ERP_LEAD if lead else "") \
+            + extra
+    elif topics and "mail" in kinds:
         checklist = Topics(topics, reference, the_plan.get("scenario_date", ""), site, ledger, name)
         extra = prompts.MAIL_EXTRA + prompts.mail_topics(topics, reference, the_plan.get("scenario_date", "")) + extra
-    elif kind.get("kind") == "mail":
+    elif kinds and kinds[0] == "mail":
         extra = prompts.MAIL_EXTRA + (prompts.MAIL_ALL_TOPICS if lead else "") + extra
+    # a website that holds other kinds of facts as well gets their instructions too (the private websites may split
+    # the facts differently: a specification inside the materials system, approval messages in a portal)
+    if lead:
+        extra += "".join(prompts.ALSO.get(other, "") for other in kinds[1:])
     if first_view is None:
         first_view = await enter(site)
     minutes = max(1, int((deadline - time.time()) / 60))
     # the ERP's lookups depend on the specification's catalogue groups: it must not give up before they arrive
+    shown = {"size": -1, "at": 0.0}
+
     def news() -> str:
         asyncio.get_running_loop().create_task(site.keep_alive())  # a refused agent sends no requests either
+        # refused again right away with nothing new: the digest it just read is not sent a second time
+        if len(ledger.entries) == shown["size"] and time.time() - shown["at"] < 20:
+            return "\n\nNothing new from the other websites since your last check (read_notes() shows all)."
+        shown.update(size=len(ledger.entries), at=time.time())
         known = ledger.digest(exclude_agent=name)
-        return ("\n\nWhat the agents on the other websites have recorded so far (one line each; look for facts that "
-                f"your website's records depend on and that you have not looked up yet):\n{known}" if known else "")
+        # only the lead: helpers and follow-ups have their own questions, and the gap list may be old by then
+        missing = [gap.get("fact", "") for gap in (ledger.latest_inputs or {}).get("missing") or []
+                   if gap.get("site_id") == site.id and gap.get("fact")] if lead else []
+        wanted = ("\n\nThe team's last check still misses from your website: " + "; ".join(missing)
+                  + ". Look these up first.") if missing else ""
+        return wanted + ("\n\nWhat the agents on the other websites have recorded so far (one line each; look for "
+                         f"facts that your website's records depend on and that you have not looked up yet):\n{known}"
+                         if known else "")
 
     # an agent that waits for the other websites' facts (the ERP) is refused for as long as the team investigates,
     # not a fixed number of times: in run #4 it used up six refusals while waiting and stopped with nothing. A mail
@@ -480,11 +602,11 @@ async def investigate(site: web.Site, task: dict, the_plan: dict, ledger: Ledger
     # its part is done.
     if refusals is None:
         # a helper is refused twice (one failed search must not end it, run #10); a checklist agent never
-        refusals = 0 if checklist else 2 if not lead else 1000 if kind.get("kind") == "erp" else 4
+        refusals = 0 if checklist else 2 if not lead else 1000 if "erp" in kinds else 4
     elif checklist:
         refusals = 0
     tools = web.toolbox(site) + record_tools(site, ledger, name) + (checklist.tools() if checklist else [])
-    if kind.get("kind") == "erp" and lead:
+    if "erp" in kinds and lead:
         tools += helper_tools(site, task, the_plan, ledger, deadline, helpers)
     agent = Agent(name, prompts.BROWSER, tools, deadline, effort="low", stay_until=deadline - (90 if lead else 20),
                   refusals=refusals, news=news, check=checklist.check if checklist else None,
@@ -511,17 +633,34 @@ def enough_refusing(ledger: Ledger, name: str, site: web.Site | None = None, idl
         text = json.dumps(entry["facts"], ensure_ascii=False)
         return entry["agent"] == name and bool(web.amounts(text)) and not (site and site.unseen(text))
 
+    site_id = site.id if site else name
+
+    def handed(fact: str) -> bool:
+        """A missing fact another agent of this website was started on, and is still working on or recorded."""
+        for given, job, agent in ledger.handed.get(site_id, []):
+            if given == fact:
+                return not job.done() or any(entry["agent"] == agent for entry in ledger.entries)
+        return False
+
+    def news(entry) -> set:
+        """What a record adds to the team's knowledge: its values and identifiers."""
+        text = json.dumps(entry["facts"], ensure_ascii=False)
+        return set(web.amounts(text)) | set(KEY.findall(text))
+
     def enough() -> bool:
         if not any(own_work(entry) for entry in ledger.entries):
             return False
         # only a gap check can tell that this website's part is complete: without one, or while it lists a fact
-        # this website should give, the agent keeps working (run #9 let the ERP agent go before two of its lookups)
+        # this website should give that no other agent has taken over, the agent keeps working (run #9 let the ERP
+        # agent go before two of its lookups; run #11 kept it 45 calls longer although a follow-up had the gap)
         latest = ledger.latest_inputs
-        if latest is None or any(gap.get("site_id") == (site.id if site else name)
+        if latest is None or any(gap.get("site_id") == site_id and not handed(gap.get("fact", ""))
                                  for gap in latest.get("missing") or []):
             return False
-        known = len(set().union(*(web.amounts(json.dumps(entry["facts"], ensure_ascii=False))
-                                  for entry in ledger.entries)))
+        # the same website's helpers and follow-ups bring nothing this agent could add: only other websites' records
+        # and its own count as new
+        known = len(set().union(*(news(entry) for entry in ledger.entries
+                                  if entry["agent"] == name or entry["site"] != site_id)))
         state["idle"] = state["idle"] + 1 if known == state["known"] else 0
         state["known"] = known
         if state["idle"] >= idle:
@@ -598,7 +737,7 @@ def code_gaps(inputs: dict | None) -> list[dict]:
     gaps = []
     foreign = [p for p in positions if (p.get("price") or {}).get("currency")
                and str(p["price"]["currency"]).strip().upper() != "EUR"
-               and calc.dec((p["price"] or {}).get("eur_per_currency_unit")) is None]
+               and calc.eur_per_unit(p["price"], str(p["price"]["currency"]).strip().upper()) is None]
     if foreign:
         gaps.append({"feeds": "fx", "fact": "the exchange rate (currency fixing) for "
                      + ", ".join(sorted({str(p["price"]["currency"]) for p in foreign}))})
@@ -642,11 +781,15 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
     quick solve finds the inputs still empty, and a fresh mail agent goes after each topic that gives one. Twice at
     most. The last inputs are kept for the case that the final solve fails."""
     kinds = {entry.get("site_id"): entry.get("kind") for entry in the_plan.get("sites", [])}
-    mail = next((site for site in sites if kinds.get(site.id) == "mail"), None)
-    if mail is None:
-        return
+    mail = next((site for site in sites if site.id == mail_site_id(the_plan)), None)
     try:
-        await asyncio.wait_for(asyncio.shield(mail_job), timeout=max(0.0, until - 210 - time.time()))
+        if mail_job is not None:
+            await asyncio.wait_for(asyncio.shield(mail_job), timeout=max(0.0, until - 210 - time.time()))
+        else:
+            # the ERP lead waits for the gap check itself: waiting for it would hold the first round to the end
+            jobs = list(others or [])
+            waiting = [job for job, site in zip(jobs, sites) if "erp" not in kinds_of(the_plan, site.id)] or jobs
+            await asyncio.wait(waiting or [asyncio.sleep(0)], timeout=max(0.0, until - 210 - time.time()))
     except (asyncio.TimeoutError, Exception):
         pass
     dispatched, agents, busy = set(), [], {}
@@ -658,7 +801,7 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
         if inputs:
             ledger.latest_inputs = inputs
             fresh = [(topic, why) for topic, why in gap_topics(inputs, the_plan, task["brief"])
-                     if fold(topic["topic"]) not in dispatched]
+                     if fold(topic["topic"]) not in dispatched] if mail is not None else []
             print(f"[team] gap check {round_number}: {[gap['feeds'] for gap in code_gaps(inputs)]}; mail topics "
                   f"to search again: {[topic['topic'] for topic, _ in fresh]}", flush=True)
             for number, (topic, why) in enumerate(fresh, len(dispatched) + 1):
@@ -666,13 +809,15 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
                 agents.append(asyncio.create_task(follow_up(
                     mail, task, the_plan, ledger, [f"{topic['topic']}: {why}"], until, topics=[topic],
                     name=f"{mail.id}+{number}")))
+                HELPER_TASKS.append(agents[-1])  # stopped at the investigation's hard stop like the helpers
             # the other websites' missing facts get an agent of their own too, while there is time (run #10 left
             # three materials to a 75-second follow-up after the investigation)
             by_id = {site.id: site for site in sites}
             asked: dict[str, list[str]] = {}
             for gap in inputs.get("missing") or []:
                 site_id = gap.get("site_id")
-                if site_id in by_id and site_id != mail.id and kinds.get(site_id) != "mail" and gap.get("fact"):
+                if site_id in by_id and (mail is None or site_id != mail.id) and kinds.get(site_id) != "mail" \
+                        and gap.get("fact"):
                     asked.setdefault(site_id, []).append(gap["fact"])
             for site_id, facts in asked.items():
                 if busy.get(site_id) and not busy[site_id].done():
@@ -681,6 +826,9 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
                 busy[site_id] = asyncio.create_task(follow_up(by_id[site_id], task, the_plan, ledger, facts, until,
                                                               name=f"{site_id}+g{round_number}"))
                 agents.append(busy[site_id])
+                HELPER_TASKS.append(busy[site_id])
+                ledger.handed.setdefault(site_id, []).extend(
+                    (fact, busy[site_id], f"{site_id}+g{round_number}") for fact in facts)
         if round_number == 1:  # a second look a few minutes before the end, when more has been recorded
             wait = until - 210 - time.time()
             if wait < 60:
@@ -696,6 +844,10 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
 
 
 EVIDENCE = {"type": "string", "description": "In a few words: which record this is and why it applies"}
+# attributes the brief's matching rule names besides the five above (another product has other attributes)
+OTHER = {"type": "object", "description": "Every further attribute the brief's matching rule names, name: value",
+         "additionalProperties": {"type": "string"}}
+ATTRIBUTES = ("bore", "stroke", "pressure", "mounting", "certification")
 POSITION = {"type": "object", "properties": {
     "position": STRING,
     "tender_quantity": NUMBER, "unit": STRING,
@@ -705,21 +857,26 @@ POSITION = {"type": "object", "properties": {
         "qa_number": STRING, "date": STRING, "quantity": NUMBER}}},
     "withdrawn_qa_numbers": {"type": "array", "items": STRING},
     "requirement": {"type": "object", "description": "After amendments and stroke derivation", "properties": {
-        "id": STRING, "catalogue_group": STRING, "bore": STRING, "stroke": STRING, "pressure": STRING,
-        "mounting": STRING, "certification": STRING}},
+        "id": STRING, "catalogue_group": {"type": "string", "description": "The key the specification gives for "
+                                                                    "finding the material in the ERP, whatever its "
+                                                                    "label (catalogue group, material class, ...)"},
+        "bore": STRING, "stroke": STRING, "pressure": STRING,
+        "mounting": STRING, "certification": STRING, "other": OTHER}},
     "material_number": NULLABLE_STRING,
     "material_attributes": {"type": "object", "properties": {
         "status": {"type": "string", "description": "The visible status value and its meaning, e.g. active or "
                                                     "blocked"},
         "bore": STRING, "stroke": STRING, "pressure": STRING, "mounting": STRING,
-        "certification": STRING}},
+        "certification": STRING, "other": OTHER}},
     "price": {"type": "object", "properties": {
         "valid_from": STRING, "valid_to": STRING, "currency": STRING, "price_unit": NUMBER,
         "number_format": {"type": ["string", "null"], "description": "The condition's number format or locale as "
                                                                     "the website states it (e.g. de-DE, en-US)"},
         "scales": {"type": "array", "items": {"type": "object", "properties": {"min_quantity": NUMBER,
                                                                              "price": NUMBER}}},
-        "eur_per_currency_unit": NUMBER}},
+        "eur_per_currency_unit": NUMBER,
+        "currency_per_eur": {**NUMBER, "description": "Only if the fixing is quoted the other way round (units of "
+                                                      "the currency per EUR); never invert it yourself"}}},
     "condition_group": {"type": ["string", "null"], "description": "The condition group a clarification assigned "
                                                                    "to this position, or null"},
     "discount_scope": {"type": "string", "enum": ["base_only", "base_and_surcharge", "none"],
@@ -767,10 +924,14 @@ async def solve(task: dict, the_plan: dict, ledger: Ledger, deadline: float,
                 hard_deadline: float = float("inf"), effort: str = "medium", name: str = "solver") -> dict | None:
     agent = Agent(name, prompts.SOLVER, [], deadline, finish=INPUTS_SCHEMA, effort=effort,
                   hard_deadline=hard_deadline)
-    inputs = await agent.run(prompts.solve(task["brief"], the_plan, ledger.text()), max_steps=4)
+    inputs = await agent.run(prompts.solve(prompts.brief_for(task["brief"], prompts.FOR_ALL, task),
+                                           {k: v for k, v in the_plan.items() if k not in ("tan_site_id",)},
+                                           ledger.for_solver()), max_steps=4)
     if inputs is not None:
         inputs["tender_reference"] = the_plan.get("tender_reference") or inputs.get("tender_reference")
         inputs.setdefault("scenario_date", the_plan.get("scenario_date"))
+        if inputs.get("decision") == "no_bid":
+            normalize_no_bid(inputs, ledger)
         if inputs.get("decision") == "no_bid" and not no_bid_shown(inputs):
             print(f"[team] no_bid without a requirement that has no matching material: bidding instead "
                   f"({inputs.get('decision_reason')})", flush=True)
@@ -778,10 +939,37 @@ async def solve(task: dict, the_plan: dict, ledger: Ledger, deadline: float,
     return inputs
 
 
+BLOCKED = re.compile(r"gesperrt|blocked|\binaktiv|\binactive|nicht\s+freigegeben|gelöscht|deleted", re.I)
+ACTIVE = re.compile(r"(?<!nicht )freigegeben|\bactive\b|\baktiv\b", re.I)
+
+
+def blocked(status: str) -> bool:
+    """Whether a material's own status is blocked: only the status itself counts, not a legend or a note about another
+    candidate after it ("01 freigegeben (status key: 01 freigegeben · 03 gesperrt)" is active, run #16 review)."""
+    head = re.split(r"[;(·]", str(status or ""), maxsplit=1)[0]
+    head = re.sub(r"nicht\s+gesperrt|not\s+blocked", "", head, flags=re.I)
+    return bool(BLOCKED.search(head)) and not ACTIVE.search(head)
+
+
+def normalize_no_bid(inputs: dict, ledger: Ledger):
+    """A no_bid written in another shape than "a position without a material": a blocked candidate named as the
+    material is no material; no positions at all take the last gap check's positions without their materials. The
+    follow-up round then checks the candidate list before the no_bid may stand."""
+    positions = inputs.get("positions") or []
+    if not positions and ledger.latest_inputs:
+        positions = [{**position, "material_number": None} for position in ledger.latest_inputs.get("positions") or []]
+        inputs["positions"] = positions
+    for position in positions:
+        status = str((position.get("material_attributes") or {}).get("status") or "")
+        if position.get("material_number") and blocked(status):
+            position["material_number"] = None
+
+
 def no_bid_shown(inputs: dict) -> bool:
     """Rule 3 calls for no_bid only when a position's requirement has no active matching material: that needs a
-    position whose requirement is known and which has no material."""
-    return any((position.get("requirement") or {}).get("catalogue_group") and not position.get("material_number")
+    position whose requirement is known (by its search key or its id) and which has no material."""
+    return any(((position.get("requirement") or {}).get("catalogue_group")
+                or (position.get("requirement") or {}).get("id")) and not position.get("material_number")
                for position in inputs.get("positions") or [])
 
 
@@ -792,8 +980,10 @@ def mismatches(inputs: dict) -> list[str]:
         requirement, material = position.get("requirement") or {}, position.get("material_attributes") or {}
         if not position.get("material_number"):
             continue
-        for attribute in ("bore", "stroke", "pressure", "mounting", "certification"):
-            want, have = _norm(requirement.get(attribute)), _norm(material.get(attribute))
+        wanted = {**{a: requirement.get(a) for a in ATTRIBUTES}, **(requirement.get("other") or {})}
+        held = {**{a: material.get(a) for a in ATTRIBUTES}, **(material.get("other") or {})}
+        for attribute, value in wanted.items():
+            want, have = _norm(value), _norm(held.get(attribute))
             if want and have and want != have:
                 problems.append(f"position {position.get('position')}: {attribute} {have!r} != required {want!r}")
     return problems
@@ -805,12 +995,17 @@ def _norm(value) -> str:
 
 async def investigate_all(sites: list[web.Site], task: dict, the_plan: dict, ledger: Ledger, until: float):
     """Every website at once, each agent stopping by `until`, and the gap rounds; a hard stop shortly after."""
-    kinds = {entry.get("site_id"): entry.get("kind") for entry in the_plan.get("sites", [])}
-    jobs = [asyncio.create_task((investigate_mail if kinds.get(site.id) == "mail" else investigate)(
+    # the parallel topic agents take a whole website: only the mailbox itself; a website that holds messages as well
+    # keeps its own investigator (with the message instructions), and the gap rounds send topic agents there
+    mail_id = next((s.get("site_id") for s in the_plan.get("sites", []) if s.get("kind") == "mail"), None)
+    jobs = [asyncio.create_task((investigate_mail if site.id == mail_id else investigate)(
         site, task, the_plan, ledger, until)) for site in sites]
-    mail_job = next((job for job, site in zip(jobs, sites) if kinds.get(site.id) == "mail"), None)
-    if mail_job is not None:
-        jobs.append(asyncio.create_task(gap_rounds(sites, task, the_plan, ledger, until, mail_job, list(jobs))))
+    for job, site in zip(jobs, sites):  # a crash shows in the log when it happens, not at the end (run #15)
+        job.add_done_callback(lambda done, name=site.id: done.cancelled() or not done.exception() or print(
+            f"[team] the {name} investigator failed: {done.exception()!r}", flush=True))
+    # the gap rounds run in any case: without a mailbox they still chase the other websites' missing facts
+    mail_job = next((job for job, site in zip(jobs, sites) if site.id == mail_id), None)
+    jobs.append(asyncio.create_task(gap_rounds(sites, task, the_plan, ledger, until, mail_job, list(jobs))))
     done, pending = await asyncio.wait(jobs, timeout=max(1.0, until - time.time() + 45))
     for job in list(pending) + [helper for helper in HELPER_TASKS if not helper.done()]:
         job.cancel()

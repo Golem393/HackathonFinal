@@ -10,6 +10,7 @@ and the submission starts no later than SUBMIT_RESERVE before the end, whatever 
 """
 import asyncio
 import json
+import re
 import sys
 import time
 from urllib.parse import urlparse
@@ -80,6 +81,8 @@ async def work(task: dict, sites: list[web.Site]) -> dict | None:
         # from here on nothing may stop the signature: a signed bid with gaps scores, an unsigned one does not
         inputs = await safely("solve", team.solve(task, the_plan, ledger, min(time.time() + SOLVE_SECONDS, submit_by),
                                                   submit_by)) or ledger.latest_inputs
+        # the form needs time by the number of positions: a larger tender leaves less for the follow-up
+        submit_by = min(submit_by, end - 20 - form_seconds(inputs))
         inputs = await safely("follow-up", follow_up_round(task, the_plan, ledger, inputs, by_id, submit_by),
                               inputs) or inputs
         if inputs:
@@ -98,13 +101,21 @@ async def work(task: dict, sites: list[web.Site]) -> dict | None:
         if task["submission"].get("kind") == "api":
             return answer  # main() sends it
 
-        mail = guarded(lambda: tan_site(the_plan, by_id), None)
+        mail = guarded(lambda: tan_site(the_plan, by_id, target), target)
         values = guarded(lambda: configurator_values(inputs), {})
         result = await safely("submission", submit.submit(target, mail, task, answer, omitted, end - 20, values))
         log(f"[team] submission: {result}")
         return None  # a "site" submission is entered on the website, not returned
     finally:
         keeper.cancel()
+
+
+def form_seconds(inputs: dict | None) -> float:
+    """About how long entering and signing the bid takes: a fixed part (bidder data, conditions, declarations, TAN)
+    and about 25 s per position (configurator, prices; run #11 took about 19); at least the reserve the public form
+    needed."""
+    positions = len((inputs or {}).get("positions") or [])
+    return max(SUBMIT_RESERVE - 20, 150 + 25 * positions)
 
 
 async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, inputs: dict | None, by_id: dict,
@@ -117,6 +128,7 @@ async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, input
     if questions and time.time() + 75 + 30 < submit_by:
         seconds = max(75.0, min(210.0, submit_by - time.time() - 100))
         log(f"[team] following up for {seconds:.0f} s on {questions}")
+        recorded = len(ledger.entries)
         until = time.time() + seconds
         mail_topics = [topic for topic, _ in team.gap_topics(inputs, the_plan, task["brief"])]
         try:  # a follow-up stuck on a page must never hold up the submission
@@ -126,6 +138,11 @@ async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, input
                 for site_id, asked in questions.items()), return_exceptions=True), seconds + 30)
         except asyncio.TimeoutError:
             log("[team] the follow-up round did not end in time; going on with what is recorded")
+        # only a first solve over the whole ledger may stand, not the gap check's older inputs (run #16 review)
+        if len(ledger.entries) == recorded and inputs is not None and inputs is not ledger.latest_inputs \
+                and not no_bid_first:
+            log("[team] the follow-up recorded nothing new: the first solve stands")
+            return inputs
         second = await safely("solve", team.solve(task, the_plan, ledger, min(time.time() + SOLVE_SECONDS, submit_by),
                                                   submit_by))
         confirmed = bool(no_bid_first and second and second.get("decision") == "no_bid")
@@ -141,13 +158,27 @@ async def follow_up_round(task: dict, the_plan: dict, ledger: team.Ledger, input
     return inputs
 
 
+def key(text) -> str:
+    return re.sub(r"[^0-9a-z]", "", str(text or "").casefold())
+
+
+def materials_sites(the_plan: dict, by_id: dict | None = None) -> list[str]:
+    """The websites holding materials: the main ERP first, then any that holds materials as well."""
+    sites = [s["site_id"] for s in the_plan.get("sites", []) if "erp" in team.kinds_of(the_plan, s.get("site_id"))
+             and (by_id is None or s.get("site_id") in by_id)]
+    return sorted(sites, key=lambda site: team.kind_of(the_plan, site) != "erp")
+
+
 def materials_checked(inputs: dict, ledger: team.Ledger, the_plan: dict) -> bool:
-    """Every position left without a material has its catalogue group in a record of the materials website."""
-    materials = {s["site_id"] for s in the_plan.get("sites", []) if s.get("kind") == "erp"}
-    records = " ".join(json.dumps(entry, ensure_ascii=False) for entry in ledger.entries if entry["site"] in materials)
-    groups = [(position.get("requirement") or {}).get("catalogue_group") for position in inputs.get("positions") or []
-              if not position.get("material_number")]
-    return bool(groups) and all(group and group in records for group in groups)
+    """Every position left without a material has its search key (else its requirement id) in a record of the
+    materials website."""
+    materials = set(materials_sites(the_plan))
+    records = key(" ".join(json.dumps(entry, ensure_ascii=False) for entry in ledger.entries
+                           if entry["site"] in materials))
+    keys = [key((position.get("requirement") or {}).get("catalogue_group")
+                or (position.get("requirement") or {}).get("id"))
+            for position in inputs.get("positions") or [] if not position.get("material_number")]
+    return bool(keys) and all(len(k) >= 3 and k in records for k in keys)
 
 
 async def safely(what: str, job, fallback=None):
@@ -186,10 +217,10 @@ def follow_up_questions(inputs: dict | None, the_plan: dict, by_id: dict) -> dic
             seen = f" (seen and rejected: {gap['seen']})" if gap.get("seen") else ""
             questions.setdefault(gap["site_id"], []).append(f"{gap.get('fact', '')}{seen}")
     if inputs and inputs.get("decision") == "no_bid":
-        materials = next((s["site_id"] for s in the_plan.get("sites", []) if s.get("kind") == "erp"
-                          and s.get("site_id") in by_id), None)
+        materials = next(iter(materials_sites(the_plan, by_id)), None)
         for position in inputs.get("positions") or []:
-            group = (position.get("requirement") or {}).get("catalogue_group")
+            group = (position.get("requirement") or {}).get("catalogue_group") \
+                or (position.get("requirement") or {}).get("id")
             if materials and group and not position.get("material_number"):
                 questions.setdefault(materials, []).append(
                     f"every material of catalogue group {group} (all result pages) with its visible status and all "
@@ -210,13 +241,23 @@ def submission_site(task: dict, the_plan: dict, sites: list[web.Site]) -> web.Si
         sites[0])
 
 
-def tan_site(the_plan: dict, by_id: dict) -> web.Site | None:
-    """Where the signing TAN arrives: the website the brief names for it, else the mailbox."""
+def tan_site(the_plan: dict, by_id: dict, fallback: web.Site | None = None) -> web.Site | None:
+    """Where the signing TAN arrives: the website the plan names; else one the brief says holds the TAN; else the
+    mailbox (also one holding messages as well); else the submission website. Never a guess between names."""
     named = the_plan.get("tan_site_id")
     if named in by_id:
         return by_id[named]
-    return next((by_id[s["site_id"]] for s in the_plan.get("sites", []) if s.get("kind") == "mail"
-                 and s["site_id"] in by_id), None)
+    sites = [s for s in the_plan.get("sites", []) if s.get("site_id") in by_id]
+    holds_tan = lambda s: re.search(r"\bTAN\b", s.get("holds") or "")
+    # the submission website's description often says the bid is "signed with a TAN": that is not where it arrives
+    for test in (lambda s: holds_tan(s) and by_id[s["site_id"]] is not fallback,
+                 lambda s: s.get("kind") == "mail",
+                 lambda s: "mail" in team.kinds_of(the_plan, s.get("site_id")),
+                 holds_tan):
+        found = next((by_id[s["site_id"]] for s in sites if test(s)), None)
+        if found:
+            return found
+    return fallback
 
 
 async def keep_sessions(sites: list[web.Site], every: float = 20.0):
@@ -250,10 +291,11 @@ def configurator_values(inputs: dict | None) -> dict[str, dict]:
     values = {}
     for position in (inputs or {}).get("positions") or []:
         material, requirement = position.get("material_attributes") or {}, position.get("requirement") or {}
-        values[str(position.get("position"))] = {
-            key: material.get(key) or requirement.get(key)
-            for key in ("bore", "stroke", "pressure", "mounting", "certification")
-            if material.get(key) or requirement.get(key)}
+        named = {**{key: requirement.get(key) for key in team.ATTRIBUTES}, **(requirement.get("other") or {})}
+        own = {**{key: material.get(key) for key in team.ATTRIBUTES}, **(material.get("other") or {})}
+        values[str(position.get("position"))] = {key: own.get(key) or named.get(key)
+                                                 for key in dict.fromkeys(list(named) + list(own))
+                                                 if own.get(key) or named.get(key)}
     return values
 
 

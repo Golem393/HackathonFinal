@@ -45,6 +45,21 @@ class Steps(unittest.TestCase):
         self.assertIsNone(self.guard.step_position(view))
 
 
+class OtherIds(unittest.TestCase):
+    def test_bare_and_prefixed_position_ids(self):
+        answer = {**ANSWER, "positions": [dict(ANSWER["positions"][0], position="10"),
+                                          dict(ANSWER["positions"][1], position="20")]}
+        guard = submit.FormGuard(answer, [])
+        self.assertTrue(guard.usable)
+        view = ('## Position 20\nSchritt 4 von 9\n[3 select "Artikel" selected="QX-11" options: "QX-11"]\n'
+                '[10 input "Menge" value="10"] [11 input "Preis" value="100,00"] [12 input "Zuschlag" value="3,25"]')
+        self.assertEqual(guard.step_position(view), "20")
+        self.assertIn("values of position 10", guard.step_problem(view, "Weiter"))
+        prefixed = submit.FormGuard({**ANSWER, "positions": [dict(ANSWER["positions"][0], position="A-2")]}, [])
+        self.assertEqual(prefixed.step_position("## Los A-2\nSchritt 4 von 9"), "A-2")
+        self.assertIsNone(prefixed.step_position("Schritt 2 von 9"))
+
+
 class Summary(unittest.TestCase):
     def test_the_summary_is_checked_against_the_bid(self):
         guard = submit.FormGuard(ANSWER, [])

@@ -1,6 +1,7 @@
 """What the agents are told. Nothing here names a website, a page or a value: the brief, read at run time, says what
 the task is and where its facts are; these texts say how to work."""
 import json
+import re
 
 BROWSER = """You are a careful agent preparing a company's bid for a public tender. You operate one web browser on one
 website through tools, and you decide yourself where to go, what to search for and which records and documents matter.
@@ -10,14 +11,14 @@ The page is shown to you as text. Numbered elements such as [12 button "Suchen"]
 one. Frames are shown after the main page. Every action returns the updated page.
 
 How to work:
-- The website is in German and built to trip you up: cookie walls and notices to accept, popups, sliders to drag (drag()),
+- The website is in German and built to trip you up: cookie walls and notices to accept, popups, sliders to drag (drag())
+  or controls to press and hold (hold()),
   confirmation checkboxes, codes to copy from one field into another, error pages that need a reload, sessions that expire (call
   login, then return to where you were), look-alike records for other references, outdated versions shown first,
   paged lists and "load more" buttons, documents in frames or ZIP files, decoy buttons that do nothing. Check after
   each action that it did what you meant; if not, try another way.
 - You are usually logged in already. If a login page appears (a session expired), call login(); it fills in this
   website's username and password. Fill any other fields yourself.
-- fill() enters several fields at once. read_document() reads a linked file or a frame's document as text.
 - A search runs only once submitted: type(..., enter=true) or click its button, then read the results. If it finds
   nothing, change the term (the exact identifier, a shorter part of it, or an attribute) instead of repeating it.
 - If a link or menu leads somewhere unrelated, go back to the start page or the navigation and try another route
@@ -28,6 +29,13 @@ How to work:
   check that the page now says it is unlocked, then open the collapsed sections inside it (▶ / summaries) and read
   the original text there, before you leave the page; unlocking does not carry over to other pages. A local preview
   or an unsent draft is not the original. A title ending in "…" is not the content: open it.
+- Access checks ("I am not a robot" and the like) are part of these websites and come in many shapes; solve them
+  yourself: tick the checkbox; drag a slider all the way (or to the marked spot); press and hold (hold()); type the
+  code or word the page shows, exactly (look with screenshot() if it is a picture); answer a simple question (a sum);
+  click the tiles or items the task names, or put them in the asked order; drag a piece onto its slot (drag(to=));
+  scroll a terms box to its end (scroll()) when its checkbox stays locked.
+  Read the instruction next to the check first, then check that the page says it is unlocked; a check that resets
+  is done again. A third-party verification service you cannot pass is reported in a record, not worked around.
 - Access steps are part of using a website and you complete them yourself: accepting notices and terms, ticking
   confirmation checkboxes, dragging sliders, copying a code or receipt number shown on the page into the field that
   asks for it, and sending the request form that unlocks documents or messages. When such a form offers several
@@ -52,7 +60,7 @@ INVESTIGATOR = """
 While investigating, do not start entering the bid: another agent does that afterwards. Express interest in the tender
 if documents need it, but do not open the bid submission form. Record each specification requirement as soon as you
 have read it (one record per requirement, with all its attributes and catalogue group): the ERP agent is waiting for
-them. Read web pages by opening them (goto, click), not with read_document."""
+them."""
 
 FACTS = """Facts the brief's rules can need (record whichever of them this website holds):
 1. The tender: its exact reference, title, buyer, deadline (with time zone) and its positions (bill of quantities,
@@ -98,9 +106,52 @@ tables as lists of rows. One record per record or document; put where you saw it
 is lost to the team. Other agents investigate the other websites at the same time; read_notes() shows their records."""
 
 
+# brief bullets ("- Label: ...") a role never acts on, dropped by their exact label; a brief without them keeps all
+FOR_ALL = ("Scoring in bid cases", "Agent requirement")  # grading weights, how the team is built
+FOR_INVESTIGATORS = FOR_ALL + ("Partial submission", "Pricing breakdown", "Final price",
+                               "These calculation rules apply to both practice and private datasets")
+# what the submitter needs of the rules: what it enters and how, never how values are computed
+FOR_SUBMITTER_KEEP = ("Material", "Decision", "Units", "Technical derivation", "Partial submission",
+                      "Pricing breakdown")
+
+
+def brief_for(brief: str, drop: tuple = (), task: dict | None = None, keep: tuple | None = None) -> str:
+    """The brief without the bullets of the rule sections whose label is in `drop` (or, with `keep`, without every
+    labelled bullet and numbered rule of those sections not in `keep`); the passwords of the run's websites masked
+    when `task` is given (no model that reads this logs in). A brief without the expected sections is returned whole:
+    nothing is dropped on a guess."""
+    lines = brief.splitlines()
+    if not any(line.startswith("## ") and "rules" in line.lower() for line in lines):
+        out = brief
+    else:
+        out_lines, in_rules, skipping = [], False, False
+        for line in lines:
+            if line.startswith("## "):
+                in_rules, skipping = "rules" in line.lower(), False
+                out_lines.append(line)
+                continue
+            label = re.match(r"^(?:- |\d+\. \*{0,2})([^:]{2,80}?)\*{0,2}:", line)
+            if in_rules and (line.startswith("- ") or re.match(r"^\d+\. ", line)):
+                name = label.group(1).strip() if label else line[2:].strip()
+                if keep is not None:
+                    skipping = not any(name.startswith(k) for k in keep)
+                else:
+                    skipping = any(name.startswith(d) for d in drop)
+            elif in_rules and not line.strip():
+                skipping = False
+            if not skipping:
+                out_lines.append(line)
+        out = "\n".join(out_lines)
+    for access in (task or {}).get("access") or []:
+        secret = str((access.get("credentials") or {}).get("password") or "")
+        if len(secret) >= 8:
+            out = out.replace(secret, "(hidden)")
+    return out
+
+
 def investigate(brief: str, site, holds: str, reference: str, minutes: int, first_view: str, extra: str = "") -> str:
     return f"""# The brief
-{brief}
+{brief_for(brief, FOR_INVESTIGATORS)}
 
 # Your website
 {site.id} at {site.url}. According to the brief it holds: {holds}
@@ -126,12 +177,8 @@ from the tender's clarifications); read_notes("requirement") or read_notes() sho
 away: pass the access steps and learn how this ERP's material search works. A search for a generic word (the kind of
 product) lists nothing or too much; the catalogue groups are the search keys: type a group key exactly as the
 specification writes it into the search's text field and run the search (materials carry their group in their
-description). First note for yourself which requirement each position uses (the bill of quantities in the notes; do not record()
-other agents' facts) and look up only those requirements' groups, in position order: the specification can list requirements no position uses,
-and their materials are never needed. Record a candidate's details (status, prices, stock) only after its
-attributes match its requirement. If they are not recorded yet, call
-wait_for_notes("requirement") instead of finishing, as often as needed (look at the page in between, so the
-session stays alive), then search each catalogue group in turn. Search by catalogue group when you have it, narrowed so
+description). Record a candidate's details (status, prices, stock) only after its attributes match its
+requirement. Search by catalogue group when you have it, narrowed so
 that the result list is short enough to be shown, and record every candidate with its attributes and status; then
 open the candidates whose attributes match a requirement and record their price conditions, stock, lead times,
 packaging and masses. A requirement with a usable stroke matches the ERP's nominal stroke (usable stroke plus the
@@ -148,6 +195,14 @@ addressed (the address of its technical data, status, stock or price view), open
 material directly with goto() instead of clicking through menus. An error page ("temporarily unavailable" and the
 like) is transient: reload or open the address again at once. Record each material's facts as soon as you have
 them, one record per material."""
+
+# for the agents that decide what to look up (the lead and its follow-ups); a helper's job names its part already
+ERP_ROUTING = """
+First note for yourself which requirement each position uses (the bill of quantities in the notes; do not record()
+other agents' facts) and look up only those requirements' groups, in position order: the specification can list
+requirements no position uses, and their materials are never needed. If the requirements are not recorded yet, call
+wait_for_notes("requirement") instead of finishing, as often as needed (look at the page in between, so the session
+stays alive), then search each catalogue group in turn."""
 
 ERP_LEAD = """
 Work in parallel: the lookups of different requirements are independent. As soon as you know which requirements the
@@ -190,6 +245,26 @@ reference, the full relevant content). Then call close_topic() with its subject,
 it, its date and its sender: the code checks them and tells you when a message cannot apply. If a topic is in no
 folder, try a shorter or another word, then close it as absent with the folders you searched. Finish once every topic
 is closed; the other topics are not your job."""
+
+# for a website that holds another kind of facts besides its own (said by the brief): the short form of that kind's
+# instructions
+ALSO = {
+    "erp": """
+This website also holds materials (an ERP or catalogue): search them by the key the specification gives (e.g. a
+catalogue group), compare each candidate's attributes with its requirement, and for the active matching ones record
+status, every price condition (validity, currency, price unit, number format, all scales), free and blocked stock,
+lead times, pieces per carton and masses.""",
+    "mail": """
+This website also holds messages (approvals, rules, releases, tariffs, fixings): search them with the exact tender
+reference plus one topic word, in every folder or list; open each relevant message and record sender, date, subject,
+reference and its original text. A look-alike reference or a date after the scenario date never applies.""",
+    "specification": """
+This website also holds the technical specification: find the revision marked current and record every requirement
+of it with all its attributes, its search key (e.g. a catalogue group) and pieces per set.""",
+    "tender": """
+This website also holds tender facts: record the positions (bill of quantities) and every clarification answer with
+its own date.""",
+}
 
 PLAN = """Read the brief and say what it asks for. Copy the identifiers exactly as the brief writes them. For each
 website in the access list, say which kind it is and what the brief says it holds. List every kind of mailbox message
@@ -234,6 +309,8 @@ seen: never use its values; take the fact from a verified record, or leave it nu
 List every position of the tender, also one without a material or price: the code enters what is known, and each
 known field scores on its own. Give each position's requirement with its attributes after amendments and stroke
 derivation (the bid form's configurator is driven by them), and the material's own attributes when you chose one.
+Attributes the brief's matching rule names beyond bore, stroke, pressure, mounting and certification go into
+"other" (name: value), for the requirement and the material alike.
 
 Details that decide points:
 - Material: blocked materials never qualify, even when they match on every attribute and are listed first.
@@ -249,7 +326,9 @@ on the websites ("1.234,50" is 1234.5). A number recorded with a locale or numbe
 separators: copy it with the note (e.g. "12,345 (en-US)") and the code reads it correctly. Dates as ISO 8601. Use
 null for a fact nobody recorded and list it in `missing` with the website most likely to hold it; for a mailbox fact
 also the topic word as the brief spells it, and what was found instead and rejected (another reference, a later date,
-another sender). For no_bid, name in decision_reason every candidate of the group with its status. Keep evidence
+another sender). For no_bid, name in decision_reason every candidate of the group with its status, and still list
+every position with its requirement; leave material_number null where no active match exists (never name a blocked
+candidate there). Keep evidence
 fields and notes short: a few words each. Answer quickly; time is short."""
 
 
@@ -258,7 +337,7 @@ def solve(brief: str, plan: dict, ledger: str) -> str:
 {brief}
 
 # What was established about the task
-{json.dumps(plan, ensure_ascii=False, indent=1)}
+{json.dumps(plan, ensure_ascii=False, separators=(",", ":"))}
 
 # Everything the investigators recorded, in order
 {ledger}
@@ -285,8 +364,9 @@ SUBMITTER_RULES = """How to enter it:
   one fill() (quantity, unit price, base, surcharge, packaging, project bonus, 0,00 included, and the lead time), and
   go on to the next step. The code checks the step before it is left and tells you what is missing or wrong.
   Enter every position the form asks for; omit a position only when the wrap-up message near the end tells you to.
-- Never add positions. Tick only the declarations the brief asks for (such as acknowledging the tender documents);
-  leave others unticked, especially one that applies your own terms and conditions.
+- Never add positions. Tick the declarations the brief asks for (such as acknowledging the tender documents). If the
+  code reports that the form cannot be sent because a declaration is required, tick it, unless it applies your own
+  terms and conditions, adds a reservation or condition, or makes the bid a variant: never tick those.
 - Enter the order's net total from the line "Total net" at the top of the bid (not a position's line total); a gross
   amount the form shows includes VAT. The total must equal the sum of
   the line totals of the positions actually entered: if a position ended up omitted, subtract its line total from
@@ -304,7 +384,7 @@ SUBMITTER_RULES = """How to enter it:
 
 def submit(brief: str, table: str, first_view: str) -> str:
     return f"""# The brief
-{brief}
+{brief_for(brief, keep=FOR_SUBMITTER_KEEP)}
 
 # Your task
 Enter the bid below in this website and sign it, as the brief's submission section describes. This is the one and
@@ -319,16 +399,25 @@ only submission: it must be complete and correct.
 {first_view}"""
 
 
-def tan(requested_at: str, request: str, first_view: str) -> str:
+def tan(requested_at: str, request: str, first_view: str, brief_lines: str = "", asks: str = "",
+        looked: tuple = ()) -> str:
     which = (f"the TAN message for request {request} (its subject or text names this request number); other TAN "
              "messages belong to other requests and their TANs are refused" if request.strip() else
              "the newest message that carries a signing TAN; ignore older TAN messages")
+    told = (f"\nWhat the brief says about the TAN:\n{brief_lines}\n" if brief_lines else "")
+    wanted = (f"\nThe website asks: \"{asks}\". If a message lists several TANs, give exactly the one it asks for.\n"
+              if asks else "")
+    before = ("\nAn earlier attempt for this request ended on " + ", ".join(looked) + " without reading the TAN (it "
+              "was probably still locked). If that is the message for this request, open it first and unlock it "
+              "fully on that page; otherwise look in the other folders.\n" if looked else "")
     return f"""# Your task
 A signing TAN for the bid was just requested on another website, at {requested_at} UTC. Find {which}. Reload or
-reopen the inbox (it can take a few seconds to arrive), open the message itself on its own page where there is one,
-unlock it if it is locked (slider all the way, then the checkbox), and call finish with the TAN exactly as written
-in its original text. The TAN is the code inside the message text, not the request number in its subject. Be quick:
-the TAN expires within minutes. Do nothing else.
-
+reopen the inbox (it can take a few seconds to arrive), newest first; if it is not there, look in every other folder
+or area the brief or this website names (a folder can list nothing until searched: search the request number or
+"TAN"). Open the message itself on its own page where there is one, unlock it completely if it is locked (every
+control the lock shows, e.g. a slider moved all the way, then a checkbox), and call finish with the TAN exactly as
+written in its original text. The TAN is the code inside the message text, not the request number in its subject.
+Be quick: the TAN expires within minutes. Do nothing else.
+{told}{wanted}{before}
 # The website now
 {first_view}"""
