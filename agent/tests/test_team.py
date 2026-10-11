@@ -142,6 +142,25 @@ class PlanTopics(unittest.TestCase):
                          [("AB-7", ""), ("Zinsblatt", "kasse"), ("Lagerliste", "")])
 
 
+class OutsideParty(unittest.TestCase):
+    def test_the_buyers_messages_are_found_by_sender_not_by_a_topic_word(self):
+        ledger = team.Ledger()
+        site = SimpleNamespace(id="post", trail=[], credentials={"username": "vertrieb@firma.example"})
+        topics = team.Topics([{"topic": "Käufer", "sender": "", "feeds": "quantity"}], "AB-2030-11",
+                             "2030-03-10T09:00:00Z", site, ledger)
+        site.trail += ["https://post.example/?folder=inbox&q=AB-2030-11", "https://post.example/?folder=archive&q=AB-2030-11"]
+        self.assertIn("Closed", asyncio.run(topics.close(topic="Käufer", outcome="absent",
+                                                          folders_searched=["inbox", "archive"])))
+        topics = team.Topics([{"topic": "Käufer", "sender": "", "feeds": "quantity"}], "AB-2030-11",
+                             "2030-03-10T09:00:00Z", site, ledger)
+        ledger.add("post", "/m/7", "buyer message", {"subject": "AW: Anfrage AB-2030-11", "date": "08.03.2030 11:00",
+                                                     "change": "Position 3: 14 Stück"}, agent="post")
+        answer = asyncio.run(topics.close(topic="Käufer", outcome="recorded", subject="AW: Anfrage AB-2030-11",
+                                          reference_as_written="AB-2030-11", date="08.03.2030 11:00",
+                                          sender="einkauf@kunde.example"))
+        self.assertIn("Closed", answer)  # an outside party's address is expected, not another sender's
+
+
 class Delegation(unittest.TestCase):
     def test_a_part_is_delegated_once_and_its_helper_starts_where_the_lead_is(self):
         asyncio.run(self.check())

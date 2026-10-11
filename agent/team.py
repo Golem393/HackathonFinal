@@ -230,8 +230,10 @@ class Topics:
         name = self._topic(topic)
         if name is None:
             return f"{topic!r} is not one of your topics: {', '.join(self.topics)}."
+        outside = self.topics[name].get("feeds") in OUTSIDE
         if outcome == "absent":
-            count, wrong = self._searched(name)
+            # an outside party's messages are found by the reference alone (their subjects are general)
+            count, wrong = self._searched(self.reference if outside and self.reference else name)
             if count < 2:
                 problem = self._refuse(name, "absent", (
                     f"The brief spells it {name!r}: your searches used another spelling (the search matches words "
@@ -294,13 +296,13 @@ class Topics:
         expected = str(self.topics[name].get("sender") or "").strip().lower()
         address = re.search(r"([\w.+-]+)@([\w.-]+)", sender or "")
         local, domain = (address.group(1).lower(), address.group(2).lower().rstrip(".")) if address else ("", "")
-        if expected and address and local != expected and (name, sender) not in self.warned:
+        if expected and address and local != expected and not outside and (name, sender) not in self.warned:
             self.warned.add((name, sender))
             return (f"The brief authorizes {expected}@ for {name}; {sender} is another sender, whose message does not "
                     "apply. Look for the message from the authorized sender; if this one is from it after all, close "
                     "the topic again with the same sender.")
         own = self.mailbox_domain()
-        if own and domain and domain != own and (name, "domain") not in self.warned:
+        if own and domain and domain != own and not outside and (name, "domain") not in self.warned:
             # the same name at another domain, or a quoted or forwarded approval, is another sender
             self.warned.add((name, "domain"))
             return (f"{sender} is not at the bidder's mailbox domain {own}: the same name at another domain, or a "
@@ -344,7 +346,9 @@ class Topics:
 
 # the calculation inputs a mail topic can give (the brief's shared rules), to route a missing input to its topic
 FEEDS = ["discount", "condition_rules", "metal_index", "technical_release", "packaging", "delivery", "fx",
-         "setup_pool", "project_bonus", "other"]
+         "setup_pool", "project_bonus", "quantity", "other"]
+# a topic from an outside party (the buyer's messages that change quantities): found by sender, not by a subject word
+OUTSIDE = {"quantity"}
 # the shared rules list authorized subjects as "Subject/sender"
 SUBJECT_SENDER = re.compile(r"(?<![\w/])([A-ZÄÖÜ][\wäöüß]{3,})/([a-z][a-z0-9._-]*)\b")
 MAX_TOPICS = 12
@@ -397,12 +401,16 @@ PLAN_SCHEMA = {
         "holds": {"type": "string", "description": "What the brief says this website holds"}},
         "required": ["site_id", "kind", "also", "holds"]}},
     "tan_site_id": {"type": "string", "description": "The website where the brief says the signing TAN arrives"},
-    "mail_topics": {"type": "array", "description": "Every kind of mailbox message the brief's rules use, one entry "
-                                                    "each: the discount approval, condition rules, price indices and "
-                                                    "every authorized subject the brief lists",
+    "mail_topics": {"type": "array", "description": "Every kind of mailbox message the brief's rules take a fact "
+                                                    "from, one entry each: the discount approval, condition rules, "
+                                                    "price indices, rate sheets, every authorized subject the brief "
+                                                    "lists, and messages from the buyer (or another outside party) "
+                                                    "that change quantities or other tender facts (feeds: quantity)",
                     "items": {"type": "object", "properties": {
                         "topic": {"type": "string", "description": "The subject or topic word to search for, exactly "
-                                                                   "as the brief spells it (umlauts included)"},
+                                                                   "as the brief spells it (umlauts included); for an "
+                                                                   "outside party's messages, the party as the brief "
+                                                                   "names it (e.g. the buyer)"},
                         "sender": {"type": "string", "description": "The authorized sender's local part (before @) "
                                                                     "if the brief names one, else empty"},
                         "gives": {"type": "string", "description": "What the rules take from it, in a few words"},

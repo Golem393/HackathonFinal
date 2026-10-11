@@ -237,7 +237,9 @@ technical release, tariffs), one search per topic with the exact reference."""
 
 def mail_topics(topics: list[dict], reference: str, scenario_date: str) -> str:
     listed = "\n".join(f"- {t.get('topic')}" + (f" (sender {t['sender']}@…)" if t.get("sender") else "")
-                       + (f": {t['gives']}" if t.get("gives") else "") for t in topics)
+                       + (f": {t['gives']}" if t.get("gives") else "")
+                       + (" [by sender: search the reference alone and open every message from them]"
+                          if t.get("feeds") == "quantity" else "") for t in topics)
     return f"""
 Several agents search this mailbox at the same time, each in its own tab and for its own topics. Yours:
 {listed}
@@ -246,8 +248,11 @@ Compare the results' references and dates, open the latest message for exactly {
 scenario date ({scenario_date}), unlock it if needed, read its original text and record it (sender, date, subject,
 reference, the full relevant content). Then call close_topic() with its subject, the reference as the message writes
 it, its date and its sender: the code checks them and tells you when a message cannot apply. If a topic is in no
-folder, try a shorter or another word, then close it as absent with the folders you searched. Finish once every topic
-is closed; the other topics are not your job."""
+folder, try a shorter or another word, then close it as absent with the folders you searched. A topic marked "by
+sender" is the messages of an outside party (such as the buyer): their subjects are general ("Anfrage …", "AW: …") and
+the change sits in the text, so search the exact reference alone in every folder, open every message from that party,
+replies included, record each change it makes (which position or fact, the new value, the message's date) and close
+the topic with the latest one. Finish once every topic is closed; the other topics are not your job."""
 
 # for a website that holds another kind of facts besides its own (said by the brief): the short form of that kind's
 # instructions
@@ -289,7 +294,10 @@ Decide:
   say.
 - For each position the active ERP material whose bore, stroke, pressure, mounting and certification all exactly
   equal the requirement. Only if a position has no such material at all is the decision no_bid; double-check the
-  derived stroke and the candidates before deciding that.
+  derived stroke and the candidates before deciding that. Derive an attribute (a stroke from a usable stroke plus
+  reserves) only when the governing revision marks that requirement for it and the brief's rules say how; when an
+  active candidate matches the requirement as written and only a derivation you are unsure of rules it out, that is
+  a reason to check the derivation again, not to decide no_bid.
 - The price condition valid on the scenario date (both endpoints inclusive), with all its scales, currency, price
   unit and, for another currency than EUR, the EUR per currency unit from the applicable currency fixing.
 - The one discount approval that applies under the brief's rules (or null), with its percentage and any minimum
