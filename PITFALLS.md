@@ -542,3 +542,26 @@ sites. Everything that worked here because of how the public sites happen to loo
   view against a page with the same kinds of traps, the run contract).
 - After a local or sandbox run, compare the logged answer field by field with `notes/expected-public-1.json`
   (local only, never committed).
+
+### Runs #20–#25 and the final choice (2026-10-11)
+
+Three team-built practice evals (gen-shift, gen-mix, gen-hard) were the first worlds unlike the public one:
+
+| Code | Public | gen-shift | gen-mix | gen-hard |
+|---|---|---|---|---|
+| #16 | 100 | 0 | 65.5 | – |
+| #22 (run #20 + four small fixes) | 100, 100 | 81.3, 81.3 | 70 | 61.6 |
+| #23 (+ buyer messages by sender) | 73.8 | 100, 0 | 76 | 61.6 |
+| **#24 (+ no-bid derivation guard): final pick, best of 3** | **100** | **100** | **100** | 61.6 |
+| #25 (+ mail without the reference; experiment) | 100 | 100 | 77.5 | 61.6 |
+
+What the evals taught:
+- A hold button that relabels itself shrinks away from the pointer: press again where it is while held.
+- A code can be only in an image's alt text: the page view shows image text alternatives.
+- The submitter must always sign a bid with gaps; "must be complete" made it refuse and score 0.
+- Quantity changes can arrive as buyer mail inside general messages ("Anfrage …", "AW: …"): a topic found by sender.
+- Both wrong no-bids (public #21: 5, gen-shift #23: 0) came from an uncertain derived stroke ruling out a candidate
+  that matched as written; a no-bid needs a finished re-check of the materials and must not rest on such a derivation.
+- Rate sheets that apply to every tender carry no reference (gen-hard); a reference-only search never finds them.
+- The platform changed the final to "your pick, else your best on the public leaderboard": pick explicitly.
+- More agents cost more tokens and add chances to misread; runs vary, so one run proves little.
