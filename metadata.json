@@ -3,14 +3,22 @@
   "checkpoint_id": "01M4MAVZZPGR7MBSXJBZ1DBMFG",
   "strategy": "manual-commit",
   "branch": "multi-agent",
-  "checkpoints_count": 60,
+  "checkpoints_count": 308,
   "files_touched": [
+    "PITFALLS.md",
     "agent/agent.json",
     "agent/agent.py",
+    "agent/calc.py",
     "agent/llm.py",
+    "agent/prompts.py",
     "agent/pyproject.toml",
+    "agent/submit.py",
+    "agent/team.py",
+    "agent/tests/test_calc.py",
     "agent/tests/test_kit.py",
-    "agent/uv.lock"
+    "agent/tests/test_web.py",
+    "agent/uv.lock",
+    "agent/web.py"
   ],
   "sessions": [
     {
@@ -19,13 +27,20 @@
       "compact_transcript": "/0/transcript.jsonl",
       "content_hash": "/0/content_hash.txt",
       "prompt": "/0/prompt.txt"
+    },
+    {
+      "metadata": "/1/metadata.json",
+      "transcript": "/1/full.jsonl",
+      "compact_transcript": "/1/transcript.jsonl",
+      "content_hash": "/1/content_hash.txt",
+      "prompt": "/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 612,
-    "cache_creation_tokens": 524218,
-    "cache_read_tokens": 110328895,
-    "output_tokens": 267417,
-    "api_call_count": 283
+    "input_tokens": 2842,
+    "cache_creation_tokens": 1994536,
+    "cache_read_tokens": 608275790,
+    "output_tokens": 1070987,
+    "api_call_count": 1262
   }
 }
