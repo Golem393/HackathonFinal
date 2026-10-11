@@ -54,7 +54,7 @@ export async function gate(request, response, login, site, view) {
       send(response, 400, gatePage(view, state.code, form.returnTo || "/", problems.join(" ")))
       return true
     }
-    Object.assign(state, { passed: true, code: newCode() })
+    state.passed = true   // the code stays for the run: parallel tabs read the same one
     redirect(response, form.returnTo && form.returnTo.startsWith("/") ? form.returnTo : "/")
     return true
   }
