@@ -5,7 +5,7 @@ agent on it and compare with its public score: where it drops, it was tuned to t
 
 | Area | Public scenario | gen-shift |
 | --- | --- | --- |
-| Access check | slider, "not a robot" box, code from an image | press-and-hold button (2 s), arithmetic written in words, tile selection; comes back every 5 page views (mail, ERP) |
+| Access check | slider 0–100, "not a robot" checkbox, code in a canvas, terms box, "Weiter" | same family, other shape: stepped slider (level 4 = frei), radio "ein Mensch", check code as an image's alt text below the form, "Nutzungsbedingungen akzeptiert", "Freischalten"; mail asks on every page, ERP once per session |
 | Mailbox | inbox + archive, AND search | folder tree (Posteingang, Archiv, Ablage/Finanzen, Ablage/Technik, Entwürfe); list loads more rows only when scrolled; senders by name only; search = subjects of the current folder; attachments |
 | FX rate | Devisenfixing mail | CSV attachment in Ablage/Finanzen; decoys: an unsent draft and a rate valid only after the scenario date |
 | Discount | latest approval | the latest (final) approval sits in the archive; an older one in the inbox; a look-alike reference with a higher rate |

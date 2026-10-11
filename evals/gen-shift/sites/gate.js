@@ -1,92 +1,63 @@
-// A different access check than the challenge's: press and hold a button for two seconds, answer an arithmetic
-// question written in words, and pick every tile that shows a given symbol. It guards a site's pages per run and
-// comes back after every few page views, as checks on real portals do.
-import { randomInt, randomUUID } from "node:crypto"
-import { html, perRun, raw, readForm, redirect, send } from "./html.js"
-
-const WORDS = ["null", "eins", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun", "zehn", "elf", "zwölf"]
-const SYMBOLS = [
-  ["⚙", "Zahnrad"], ["☀", "Sonne"], ["✈", "Flugzeug"], ["⚓", "Anker"], ["☂", "Schirm"], ["♣", "Kleeblatt"],
-]
-const VIEWS_PER_PASS = 5
+// An access check from the same family as the challenge's (unlock control, "not a robot" confirmation, a code shown in
+// an image, accepting terms, a button), in a different shape: a stepped slider that must reach its top step, a radio
+// choice instead of a checkbox, the code as an image's alt text below the form, other labels. The server checks the
+// posted form only, so dragging the slider or setting its value both work. The mailbox asks again on every page the
+// way the challenge's mailbox does; the ERP once per session.
+import { randomInt } from "node:crypto"
+import { html, perRun, readForm, redirect, send } from "./html.js"
 
 const stateOf = perRun(() => ({}))
+const EVERY_PAGE = new Set(["mail"])
 
-function newChallenge() {
-  const a = randomInt(2, 9)
-  const b = randomInt(2, 13 - a)
-  const [symbol, symbolName] = SYMBOLS[randomInt(0, SYMBOLS.length)]
-  const tiles = Array.from({ length: 9 }, () => SYMBOLS[randomInt(0, SYMBOLS.length)][0])
-  for (const index of [randomInt(0, 3), randomInt(3, 6), randomInt(6, 9)]) tiles[index] = symbol   // at least 3
-  return { nonce: randomUUID(), a, b, symbol, symbolName, tiles, held: null }
-}
+const newCode = () => `PK-${randomInt(100000, 1000000)}`
 
-function gatePage(view, challenge, returnTo, error) {
-  const tileButtons = challenge.tiles.map(
-    (symbol, index) =>
-      html`<button type="button" class="tile" data-index="${index}" aria-pressed="false" aria-label="Feld ${index + 1}: ${SYMBOLS.find(([s]) => s === symbol)[1]}">${symbol}</button>`,
-  )
-  const script = `
-const hold = document.getElementById('hold'); let timer = null
-const start = () => { hold.textContent = 'Halten …'; timer = setTimeout(() => {
-  document.querySelector('input[name=held]').value = hold.dataset.nonce; hold.textContent = 'Gehalten ✓'; hold.disabled = true }, 2000) }
-const stop = () => { if (!hold.disabled) { clearTimeout(timer); hold.textContent = 'Gedrückt halten (2 Sekunden)' } }
-hold.addEventListener('pointerdown', start); hold.addEventListener('pointerup', stop); hold.addEventListener('pointerleave', stop)
-document.querySelectorAll('.tile').forEach((tile) => tile.addEventListener('click', () => {
-  tile.setAttribute('aria-pressed', tile.getAttribute('aria-pressed') === 'true' ? 'false' : 'true')
-  tile.style.outline = tile.getAttribute('aria-pressed') === 'true' ? '3px solid #1a6' : ''
-  document.querySelector('input[name=tiles]').value = [...document.querySelectorAll('.tile[aria-pressed=true]')]
-    .map((t) => t.dataset.index).join(',') }))`
+function gatePage(view, code, returnTo, error) {
   return view(
-    "Sicherheitsprüfung",
+    "Zugang freischalten",
     html`${error ? html`<p role="alert">${error}</p>` : ""}
-    <p>Bitte bestätigen Sie, dass Sie eine Person sind. Alle drei Schritte sind erforderlich.</p>
+    <p>Bevor Sie fortfahren: Bitte schalten Sie den Zugang frei.</p>
     <form method="post" action="/__check">
-      <input type="hidden" name="returnTo" value="${returnTo}"><input type="hidden" name="held" value="">
-      <input type="hidden" name="tiles" value="">
-      <h2>1. Knopf gedrückt halten</h2>
-      <button type="button" id="hold" data-nonce="${challenge.nonce}" style="padding:14px 28px">Gedrückt halten (2 Sekunden)</button>
-      <h2>2. Rechenaufgabe</h2>
-      <label>Wie viel ist ${WORDS[challenge.a]} plus ${WORDS[challenge.b]}? (in Ziffern) <input name="sum" autocomplete="off"></label>
-      <h2>3. Bildauswahl</h2>
-      <p>Wählen Sie alle Felder mit dem Symbol „${challenge.symbolName}“.</p>
-      <div style="display:grid;grid-template-columns:repeat(3,64px);gap:6px">${tileButtons}</div>
-      <p><button type="submit">Prüfung abschließen</button></p>
-    </form><script>${raw(script)}</script>`,
+      <input type="hidden" name="returnTo" value="${returnTo}">
+      <label>Freigabestufe (0 = gesperrt, 4 = frei)
+        <input type="range" name="level" min="0" max="4" step="1" value="0" list="levels"></label>
+      <datalist id="levels"><option value="0" label="gesperrt"><option value="4" label="frei"></datalist>
+      <fieldset><legend>Ich bin</legend>
+        <label><input type="radio" name="who" value="program"> ein automatisiertes Programm</label>
+        <label><input type="radio" name="who" value="person"> ein Mensch</label></fieldset>
+      <label>Prüfcode (siehe Abbildung unten) <input name="code" autocomplete="off"></label>
+      <label><input type="checkbox" name="terms"> Nutzungsbedingungen akzeptiert</label>
+      <p><button type="submit">Freischalten</button></p>
+    </form>
+    <p>Abbildung: <img alt="Prüfcode ${code}" width="120" height="28"
+      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='28'%3E%3Crect width='120' height='28' fill='%23eee'/%3E%3C/svg%3E"></p>`,
   )
 }
 
-/**
- * Guards a site: true when it answered the request itself (the check page, or the check's form). Every page view of a
- * passed check counts; after VIEWS_PER_PASS views the check comes back.
- */
+/** Guards a site: true when it answered the request itself (the check page, or the check's form). */
 export async function gate(request, response, login, site, view) {
   const url = new URL(request.url, "http://site")
   const all = stateOf(login)
-  const state = (all[site] ??= { passed: false, views: 0, challenge: newChallenge() })
+  const state = (all[site] ??= { passed: false, code: newCode() })
   if (request.method === "POST" && url.pathname === "/__check") {
     const form = await readForm(request)
-    const want = state.challenge.tiles.flatMap((symbol, index) => (symbol === state.challenge.symbol ? [String(index)] : []))
-    const got = String(form.tiles ?? "").split(",").filter(Boolean).sort((a, b) => a - b)
     const problems = []
-    if (form.held !== state.challenge.nonce) problems.push("Der Knopf wurde nicht lange genug gedrückt gehalten.")
-    if (Number(form.sum) !== state.challenge.a + state.challenge.b) problems.push("Die Rechenaufgabe ist falsch gelöst.")
-    if (got.join(",") !== want.join(",")) problems.push("Die Bildauswahl stimmt nicht.")
+    if (form.level !== "4") problems.push("Die Freigabestufe steht nicht auf „frei“.")
+    if (form.who !== "person") problems.push("Bitte bestätigen Sie, dass Sie ein Mensch sind.")
+    if ((form.code ?? "").trim() !== state.code) problems.push("Der Prüfcode stimmt nicht.")
+    if (form.terms !== "on") problems.push("Bitte akzeptieren Sie die Nutzungsbedingungen.")
     if (problems.length) {
-      state.challenge = newChallenge()
-      send(response, 400, gatePage(view, state.challenge, form.returnTo || "/", problems.join(" ")))
+      send(response, 400, gatePage(view, state.code, form.returnTo || "/", problems.join(" ")))
       return true
     }
-    Object.assign(state, { passed: true, views: 0, challenge: newChallenge() })
+    Object.assign(state, { passed: true, code: newCode() })
     redirect(response, form.returnTo && form.returnTo.startsWith("/") ? form.returnTo : "/")
     return true
   }
-  if (request.method !== "GET") return false
-  if (state.passed && state.views < VIEWS_PER_PASS) {
-    state.views += 1
+  if (request.method !== "GET" || url.pathname.startsWith("/api/") || url.pathname.includes("/attachments/")) return false
+  if (state.passed) {
+    if (EVERY_PAGE.has(site)) state.passed = false   // the mailbox locks again on the next page
     return false
   }
-  state.passed = false
-  send(response, 200, gatePage(view, state.challenge, url.pathname + url.search))
+  send(response, 200, gatePage(view, state.code, url.pathname + url.search))
   return true
 }
