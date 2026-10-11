@@ -11,6 +11,12 @@ const EVERY_PAGE = new Set(["mail"])
 
 const newCode = () => `PK-${randomInt(100000, 1000000)}`
 
+/** The check code drawn as an image (visible to a person, like the challenge's canvas), with the code as its alt text. */
+const codeImage = (code) =>
+  "data:image/svg+xml," +
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="34"><rect width="160" height="34" fill="#eef2f5" stroke="#9aa"/>` +
+    `<text x="12" y="23" font-family="monospace" font-size="18" fill="#1d2a36">${code}</text></svg>`)
+
 function gatePage(view, code, returnTo, error) {
   return view(
     "Zugang freischalten",
@@ -28,8 +34,7 @@ function gatePage(view, code, returnTo, error) {
       <label><input type="checkbox" name="terms"> Nutzungsbedingungen akzeptiert</label>
       <p><button type="submit">Freischalten</button></p>
     </form>
-    <p>Abbildung: <img alt="Prüfcode ${code}" width="120" height="28"
-      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='28'%3E%3Crect width='120' height='28' fill='%23eee'/%3E%3C/svg%3E"></p>`,
+    <p>Abbildung: <img alt="Prüfcode ${code}" width="160" height="34" src="${codeImage(code)}"></p>`,
   )
 }
 
