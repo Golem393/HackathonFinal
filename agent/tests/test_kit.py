@@ -168,16 +168,16 @@ class TheEntryPoint(Case):
     """main() with a fake browser: no answer exits cleanly, an answer is submitted."""
 
     async def start(self, environment, answer=None):
-        async def connect(playwright, number=0):
-            return "browser", "page"
+        async def open_sites(playwright, task):
+            return ["site"]
 
-        async def solve(task, page):
-            self.seen = (task, page)
+        async def work(task, sites):
+            self.seen = (task, sites)
             return answer
 
         out = io.StringIO()
-        with patch.dict(os.environ, environment, clear=True), patch.object(browsers, "connect", connect), \
-                patch.object(agent, "solve", solve), redirect_stdout(out):
+        with patch.dict(os.environ, environment, clear=True), patch.object(agent, "open_sites", open_sites), \
+                patch.object(agent, "work", work), redirect_stdout(out):
             code = await agent.main()
         return code, out.getvalue()
 
@@ -185,7 +185,7 @@ class TheEntryPoint(Case):
         api = self.serve({"/v1/runs/current": [(200, RUN)]})
         code, out = await self.start({"CHALLENGE_API_URL": api.url, "CHALLENGE_RUN_TOKEN": "rt_secret"})
         self.assertEqual(code, 0)
-        self.assertEqual(self.seen, (RUN, "page"))
+        self.assertEqual(self.seen, (RUN, ["site"]))
         self.assertIn("No answer to submit", out)
         self.assertEqual([request["method"] for request in api.requests], ["GET"])
         self.assertNotIn("s3cret", out)

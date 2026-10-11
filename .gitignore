@@ -1,0 +1,15 @@
+# Scenario values, hand-solved answers and copied docs: never in git, never in the package
+notes/
+expected*.json
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# Local
+.env
+.env.*
+.DS_Store
+*.tar.gz
+out/
