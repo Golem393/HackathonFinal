@@ -382,14 +382,40 @@ SUBMITTER_RULES = """How to enter it:
   there is no finishing: a step that looks hard is still a normal step."""
 
 
-def submit(brief: str, table: str, first_view: str) -> str:
+def prefill(brief: str, first_view: str) -> str:
+    return f"""# The brief
+{brief_for(brief, keep=FOR_SUBMITTER_KEEP)}
+
+# Your task
+Colleagues are still collecting the bid's values on the other websites. Prepare the submission on this website so the
+one who enters the bid later has less to do. Follow the brief's submission section only up to the point where the form
+asks for the first position, material, quantity, price, discount or total, then STOP and call finish.
+- Open the tender with the brief's exact reference; express interest or register participation if the website needs
+  that first; open the submission form.
+- Enter the bidder data the brief states, then choose the main offer (a bid). Continue each step with the form's own
+  continue button.
+- A contact e-mail is our mailbox's own address: look for it with read_notes("@"); if it is not recorded yet, use
+  wait_for_notes("@") (more than once if needed). Never make one up: if it is still unknown after about two minutes,
+  stop at that step and finish.
+- Never enter positions, prices, discount or totals; never request a TAN; never submit; never use the browser's back
+  navigation (it clears later steps). Close popups and pass access checks as they come.
+Finish with a short note: which steps are done and at which step the form now stands.
+
+# The website now
+{first_view}"""
+
+
+def submit(brief: str, table: str, first_view: str, prepared: str = "") -> str:
+    ready = (f"\nA colleague has already prepared this form in this session: {prepared} Continue the form from where it "
+             "stands (open the submission form again; check those first steps on the summary before signing).\n"
+             if prepared else "")
     return f"""# The brief
 {brief_for(brief, keep=FOR_SUBMITTER_KEEP)}
 
 # Your task
 Enter the bid below in this website and sign it, as the brief's submission section describes. This is the one and
 only submission: it must be complete and correct.
-
+{ready}
 {SUBMITTER_RULES}
 
 # The bid

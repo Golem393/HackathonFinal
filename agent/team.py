@@ -775,6 +775,9 @@ def gap_topics(inputs: dict | None, the_plan: dict, brief: str = "") -> list[tup
     return list(found.values())
 
 
+FIRST_GAP_CHECK = 240  # seconds into the investigation at the latest
+
+
 async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: Ledger, until: float, mail_job,
                      others: list | None = None):
     """While the team still investigates: once the mailbox agents are done (or a few minutes before the end), a
@@ -782,14 +785,18 @@ async def gap_rounds(sites: list[web.Site], task: dict, the_plan: dict, ledger: 
     most. The last inputs are kept for the case that the final solve fails."""
     kinds = {entry.get("site_id"): entry.get("kind") for entry in the_plan.get("sites", [])}
     mail = next((site for site in sites if site.id == mail_site_id(the_plan)), None)
+    # the first check comes when the mailbox is done or FIRST_GAP_CHECK seconds into the investigation, whichever is
+    # first: the ERP lead may only stop after a gap check, and waiting for a slow mailbox held the whole team (the
+    # scored run of 11 Oct: the check came at +7:03 although every other website was done by +4)
+    first_check = min(until - 210, time.time() + FIRST_GAP_CHECK)
     try:
         if mail_job is not None:
-            await asyncio.wait_for(asyncio.shield(mail_job), timeout=max(0.0, until - 210 - time.time()))
+            await asyncio.wait_for(asyncio.shield(mail_job), timeout=max(0.0, first_check - time.time()))
         else:
             # the ERP lead waits for the gap check itself: waiting for it would hold the first round to the end
             jobs = list(others or [])
             waiting = [job for job, site in zip(jobs, sites) if "erp" not in kinds_of(the_plan, site.id)] or jobs
-            await asyncio.wait(waiting or [asyncio.sleep(0)], timeout=max(0.0, until - 210 - time.time()))
+            await asyncio.wait(waiting or [asyncio.sleep(0)], timeout=max(0.0, first_check - time.time()))
     except (asyncio.TimeoutError, Exception):
         pass
     dispatched, agents, busy = set(), [], {}

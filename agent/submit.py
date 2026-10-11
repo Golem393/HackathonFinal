@@ -275,7 +275,7 @@ async def fetch_tan(mail: web.Site, requested_at: float, deadline: float, refere
 
 
 async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict, omitted: list[str],
-                 deadline: float, configurator: dict[str, dict] | None = None) -> dict | None:
+                 deadline: float, configurator: dict[str, dict] | None = None, prepared: str = "") -> dict | None:
     guard = FormGuard(answer, omitted)
     told: set[tuple] = set()
 
@@ -366,4 +366,5 @@ async def submit(site: web.Site, mail: web.Site | None, task: dict, answer: dict
     # an unsigned bid scores nothing: a model outage of a few minutes is waited out until the deadline
     agent = Agent("submit", prompts.BROWSER, tools, deadline, finish=finish, check=confirmed, effort="low",
                   warn_at=deadline - 180, warning=wrap_up, max_stalls=1000)
-    return await agent.run(prompts.submit(task["brief"], table(answer, omitted, configurator), first_view), max_steps=400)
+    return await agent.run(prompts.submit(task["brief"], table(answer, omitted, configurator), first_view, prepared),
+                           max_steps=400)

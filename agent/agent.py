@@ -23,6 +23,7 @@ import run as contract
 import submit
 import team
 import web
+from llm import Agent
 
 RUN_SECONDS = 20 * 60
 INVESTIGATE_UNTIL = 10 * 60 + 30  # seconds from the start
@@ -65,6 +66,11 @@ async def work(task: dict, sites: list[web.Site]) -> dict | None:
     log(f"[team] plan: {json.dumps(the_plan, ensure_ascii=False)}")
 
     ledger = team.Ledger()
+    # the submission's first steps (participation, bidder data, offer type) do not depend on the bid's values: a
+    # second tab of the submission website prepares them while the team investigates (the scored run of 11 Oct spent
+    # 132 s on the form after the solve)
+    early_target = guarded(lambda: submission_site(task, the_plan, sites), None)
+    prefilling = asyncio.create_task(prefill(early_target, task, ledger, until)) if early_target else None
     await team.investigate_all(sites, task, the_plan, ledger, until)
     # the platform keeps only the end of the log: the start is repeated here, compactly
     log(schedule)
@@ -103,11 +109,34 @@ async def work(task: dict, sites: list[web.Site]) -> dict | None:
 
         mail = guarded(lambda: tan_site(the_plan, by_id, target), target)
         values = guarded(lambda: configurator_values(inputs), {})
-        result = await safely("submission", submit.submit(target, mail, task, answer, omitted, end - 20, values))
+        prepared = ""
+        if prefilling is not None:
+            if not prefilling.done():
+                prefilling.cancel()   # never two agents on the same form
+            else:
+                done = guarded(prefilling.result, None) or {}
+                prepared = str(done.get("summary") or done.get("note") or done)[:400] if done else ""
+            log(f"[team] prepared form: {prepared or 'nothing'}")
+        result = await safely("submission", submit.submit(target, mail, task, answer, omitted, end - 20, values,
+                                                          **({"prepared": prepared} if prepared else {})))
         log(f"[team] submission: {result}")
         return None  # a "site" submission is entered on the website, not returned
     finally:
         keeper.cancel()
+
+
+async def prefill(target: web.Site, task: dict, ledger: team.Ledger, deadline: float) -> dict | None:
+    """Prepares the submission form up to its first position in a new tab of the submission website (same session),
+    with the team's notes for the contact address; stops before any value of the bid."""
+    try:
+        tab = await target.spawn()
+        view = await team.enter(tab)
+        tools = web.toolbox(tab) + team.record_tools(tab, ledger, "prefill")[1:]   # notes to read, nothing to record
+        agent = Agent("prefill", prompts.BROWSER, tools, deadline, effort="none")
+        return await agent.run(prompts.prefill(task["brief"], view), max_steps=60)
+    except Exception as error:
+        log(f"[prefill] failed: {error!r}")
+        return None
 
 
 def form_seconds(inputs: dict | None) -> float:
