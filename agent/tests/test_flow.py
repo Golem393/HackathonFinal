@@ -55,5 +55,38 @@ class Flow(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
 
 
+class Prefill(unittest.TestCase):
+    def test_prefill_runs_an_agent_on_a_new_tab(self):
+        """The prefill's own code path (a new tab, the entry, an agent with the prefill prompt), with stubs."""
+        seen = {}
+
+        class Tab:
+            id, url = "portal", "https://portal.example/"
+
+        class Site(Tab):
+            async def spawn(self):
+                return Tab()
+
+        async def enter(tab):
+            return "the tender portal"
+
+        class StubAgent:
+            def __init__(self, name, system, tools, deadline, **kwargs):
+                seen["name"], seen["tools"] = name, [schema["function"]["name"] for schema, _ in tools]
+
+            async def run(self, task, max_steps=0):
+                seen["task"] = task
+                return {"summary": "bidder data done"}
+
+        with patch.object(agent.team, "enter", enter), patch.object(agent, "Agent", StubAgent), \
+                patch.object(agent.web, "toolbox", lambda tab: []):
+            result = asyncio.run(agent.prefill(Site(), {"brief": "Brief"}, agent.team.Ledger(), 0))
+        self.assertEqual(result, {"summary": "bidder data done"})
+        self.assertEqual(seen["name"], "prefill")
+        self.assertIn("read_notes", seen["tools"])
+        self.assertNotIn("record", seen["tools"])
+        self.assertIn("STOP", seen["task"])
+
+
 if __name__ == "__main__":
     unittest.main()

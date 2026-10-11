@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright
 
 import browsers
 import calc
+import prompts
 import run as contract
 import submit
 import team
